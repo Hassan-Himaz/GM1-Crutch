@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,24 +19,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.example.smartcrutch.ui.*
 import com.example.smartcrutch.ui.theme.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Initialize Python for future analytics
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
@@ -43,54 +44,58 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             SmartCrutchTheme {
-                DashboardScreen()
+                MainAppContainer()
             }
         }
     }
 }
 
 @Composable
-fun DashboardScreen() {
+fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
+    val uiState by viewModel.uiState.collectAsState()
+
     Scaffold(
-        bottomBar = { BottomNavBar() },
+        bottomBar = { 
+            BottomNavBar(
+                currentScreen = uiState.currentScreen,
+                onNavigate = { viewModel.navigateTo(it) }
+            ) 
+        },
         containerColor = BackgroundNavy,
     ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            item { Spacer(modifier = Modifier.height(10.dp)) }
-            
-            // Header
-            item { HeaderSection() }
-            
-            // XP Bar
-            item { XPSection() }
-            
-            // Today's Score
-            item { ScoreSection() }
-            
-            // Today's Metrics Title
-            item {
-                Text(
-                    text = "TODAY'S METRICS",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = TextSecondary,
-                    letterSpacing = 1.sp
-                )
+        Box(modifier = Modifier.padding(innerPadding)) {
+            when (uiState.currentScreen) {
+                Screen.Home -> HomeScreen(uiState)
+                Screen.Progress -> ProgressScreen()
+                Screen.Sync -> SyncScreen(uiState, onSyncClick = { viewModel.syncData() })
+                Screen.Profile -> ProfileScreen()
             }
-            
-            // Metrics Grid
-            item { MetricsGrid() }
-            
-            // Achievements
-            item { AchievementsSection() }
-            
-            item { Spacer(modifier = Modifier.height(20.dp)) }
         }
+    }
+}
+
+@Composable
+fun HomeScreen(uiState: DashboardUiState) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        item { Spacer(modifier = Modifier.height(10.dp)) }
+        item { HeaderSection() }
+        item { ScoreSection() }
+        item {
+            Text(
+                text = "TODAY'S METRICS",
+                style = MaterialTheme.typography.labelLarge,
+                color = TextSecondary,
+                letterSpacing = 1.sp
+            )
+        }
+        item { MetricsGrid(uiState) }
+        item { AchievementsSection() }
+        item { Spacer(modifier = Modifier.height(20.dp)) }
     }
 }
 
@@ -119,41 +124,17 @@ fun HeaderSection() {
         }
         
         Surface(
-            color = AccentOrange.copy(alpha = 0.15f),
+            color = AccentGreen.copy(alpha = 0.1f),
             shape = RoundedCornerShape(20.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Star, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Column {
-                    Text("LEVEL", color = AccentOrange.copy(alpha = 0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text("Recovery Pro", color = AccentOrange, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+            Text(
+                text = "Recovering Well",
+                color = AccentGreen,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
         }
-    }
-}
-
-@Composable
-fun XPSection() {
-    Column {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("XP", color = TextSecondary, fontSize = 12.sp)
-            Text("2,840 / 3,600", color = TextSecondary, fontSize = 12.sp)
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        LinearProgressIndicator(
-            progress = { 2840f / 3600f },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(8.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            color = AccentOrange,
-            trackColor = SurfaceNavy
-        )
     }
 }
 
@@ -182,7 +163,7 @@ fun ScoreSection() {
 }
 
 @Composable
-fun MetricsGrid() {
+fun MetricsGrid(uiState: DashboardUiState) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             MetricCard(
@@ -192,7 +173,7 @@ fun MetricsGrid() {
                 content = {
                     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(80.dp)) {
                         CircularProgressIndicator(
-                            progress = { 0.78f },
+                            progress = { uiState.weightBearing },
                             modifier = Modifier.fillMaxSize(),
                             color = AccentGreen,
                             strokeWidth = 8.dp,
@@ -200,7 +181,7 @@ fun MetricsGrid() {
                             trackColor = Color.White.copy(alpha = 0.1f)
                         )
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("78%", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text("${(uiState.weightBearing * 100).toInt()}%", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                             Text("of limit", color = TextSecondary, fontSize = 10.sp)
                         }
                     }
@@ -213,11 +194,11 @@ fun MetricsGrid() {
                 accentColor = AccentPurple,
                 content = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("3,241", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                        Text("/ 4,000 steps", color = TextSecondary, fontSize = 12.sp)
+                        Text(String.format("%,d", uiState.steps), color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                        Text("/ ${uiState.goalSteps} steps", color = TextSecondary, fontSize = 12.sp)
                     }
                 },
-                footer = "81% of daily goal"
+                footer = "${(uiState.steps * 100 / uiState.goalSteps)}% of daily goal"
             )
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -228,7 +209,7 @@ fun MetricsGrid() {
                 content = {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         GaitChip("Prescribed", "3-Point", AccentBlue)
-                        GaitChip("Detected", "3-Point", AccentGreen)
+                        GaitChip("Detected", uiState.gaitPattern, AccentGreen)
                     }
                 },
                 footer = "Matches prescription"
@@ -241,11 +222,13 @@ fun MetricsGrid() {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("Wrist strain index", color = TextSecondary, fontSize = 10.sp)
-                            Text("LOW", color = AccentGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            val strainText = if (uiState.wristStrain < 0.5f) "LOW" else "HIGH"
+                            val strainColor = if (uiState.wristStrain < 0.5f) AccentGreen else Color.Red
+                            Text(strainText, color = strainColor, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Box(modifier = Modifier.fillMaxWidth().height(6.dp).background(SurfaceNavy).clip(RoundedCornerShape(3.dp))) {
-                            Box(modifier = Modifier.fillMaxWidth(0.34f).fillMaxHeight().background(AccentGreen))
+                            Box(modifier = Modifier.fillMaxWidth(uiState.wristStrain).fillMaxHeight().background(AccentGreen))
                         }
                     }
                 },
@@ -348,7 +331,99 @@ fun AchievementsSection() {
 }
 
 @Composable
-fun BottomNavBar() {
+fun SyncScreen(uiState: DashboardUiState, onSyncClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            Icons.Default.Sync,
+            contentDescription = null,
+            tint = AccentBlue,
+            modifier = Modifier.size(80.dp)
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("Data Synchronization", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "Sync your crutch data with the server to keep your progress up to date.",
+            color = TextSecondary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 32.dp)
+        )
+        Spacer(modifier = Modifier.height(40.dp))
+        
+        Surface(
+            color = SurfaceNavy,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                SyncInfoRow("Status", uiState.syncStatus, if (uiState.syncStatus == "Connected") AccentGreen else TextSecondary)
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                SyncInfoRow("Last Synced", uiState.lastSyncTime, TextPrimary)
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(40.dp))
+        
+        Button(
+            onClick = onSyncClick,
+            enabled = !uiState.isSyncing,
+            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            if (uiState.isSyncing) {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+            } else {
+                Text("Sync Now", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun SyncInfoRow(label: String, value: String, valueColor: Color) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = TextSecondary, fontSize = 14.sp)
+        Text(value, color = valueColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun ProgressScreen() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.BarChart, contentDescription = null, tint = AccentPurple, modifier = Modifier.size(100.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Detailed Progress", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Detailed charts and trends will appear here.", color = TextSecondary, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+fun ProfileScreen() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.Person, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(100.dp))
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("User Profile", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Manage your recovery goals and personal info.", color = TextSecondary, textAlign = TextAlign.Center)
+    }
+}
+
+@Composable
+fun BottomNavBar(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
     NavigationBar(
         containerColor = SurfaceNavy,
         contentColor = TextSecondary,
@@ -357,33 +432,46 @@ fun BottomNavBar() {
         NavigationBarItem(
             icon = { Icon(Icons.Default.Home, contentDescription = null) },
             label = { Text("Home") },
-            selected = true,
-            onClick = {},
+            selected = currentScreen == Screen.Home,
+            onClick = { onNavigate(Screen.Home) },
             colors = NavigationBarItemDefaults.colors(
                 selectedIconColor = AccentGreen,
                 selectedTextColor = AccentGreen,
-                unselectedIconColor = TextSecondary,
-                unselectedTextColor = TextSecondary,
                 indicatorColor = AccentGreen.copy(alpha = 0.1f)
             )
         )
         NavigationBarItem(
             icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
             label = { Text("Progress") },
-            selected = false,
-            onClick = {}
+            selected = currentScreen == Screen.Progress,
+            onClick = { onNavigate(Screen.Progress) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = AccentPurple,
+                selectedTextColor = AccentPurple,
+                indicatorColor = AccentPurple.copy(alpha = 0.1f)
+            )
         )
         NavigationBarItem(
-            icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
-            label = { Text("Connect") },
-            selected = false,
-            onClick = {}
+            icon = { Icon(Icons.Default.Sync, contentDescription = null) },
+            label = { Text("Sync") },
+            selected = currentScreen == Screen.Sync,
+            onClick = { onNavigate(Screen.Sync) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = AccentBlue,
+                selectedTextColor = AccentBlue,
+                indicatorColor = AccentBlue.copy(alpha = 0.1f)
+            )
         )
         NavigationBarItem(
             icon = { Icon(Icons.Default.PersonOutline, contentDescription = null) },
             label = { Text("Profile") },
-            selected = false,
-            onClick = {}
+            selected = currentScreen == Screen.Profile,
+            onClick = { onNavigate(Screen.Profile) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = AccentOrange,
+                selectedTextColor = AccentOrange,
+                indicatorColor = AccentOrange.copy(alpha = 0.1f)
+            )
         )
     }
 }
@@ -392,6 +480,6 @@ fun BottomNavBar() {
 @Composable
 fun DashboardPreview() {
     SmartCrutchTheme {
-        DashboardScreen()
+        MainAppContainer()
     }
 }
