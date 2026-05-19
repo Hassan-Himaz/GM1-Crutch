@@ -13,6 +13,7 @@ MagBMM150 mag(Wire);
 constexpr uint32_t kI2CFreqHz = 100000;
 constexpr uint16_t kSampleHz = 10;
 constexpr uint32_t kPeriodMs = 1000 / kSampleHz;
+constexpr bool kDebugLogs = false;
 
 bool mag_ok = false;
 bool ble_ok = false;
@@ -57,12 +58,14 @@ void setup() {
   }
 
   mag_ok = mag.begin();
-  if (!mag_ok) {
+  if (kDebugLogs && !mag_ok) {
     Serial.println("[WARN] Mag init failed, streaming IMU only");
   }
 
   if (!BLE.begin()) {
-    Serial.println("[WARN] BLE init failed, streaming serial only");
+    if (kDebugLogs) {
+      Serial.println("[WARN] BLE init failed, streaming serial only");
+    }
     ble_ok = false;
   } else {
     BLE.setLocalName("GM1-Node");
@@ -73,7 +76,9 @@ void setup() {
     gm1DataChar.writeValue("ready");
     BLE.advertise();
     ble_ok = true;
-    Serial.println("[INFO] BLE advertising as GM1-Node");
+    if (kDebugLogs) {
+      Serial.println("[INFO] BLE advertising as GM1-Node");
+    }
   }
 
   Serial.println("ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_raw,my_raw,mz_raw");
@@ -96,7 +101,9 @@ void loop() {
   int16_t mz = 0;
   if (mag_ok && !mag.readRaw(mx, my, mz)) {
     mag_ok = false;
-    Serial.println("[WARN] Mag read failed, disabling mag stream");
+    if (kDebugLogs) {
+      Serial.println("[WARN] Mag read failed, disabling mag stream");
+    }
   }
 
   char line[128];
