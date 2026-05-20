@@ -2,28 +2,42 @@ package com.example.smartcrutch.data.remote
 
 import com.example.smartcrutch.data.model.*
 import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.POST
+import retrofit2.http.*
 
 interface HarvesterApiService {
 
     /**
-     * Poll for data from a specific instrument.
-     * Use 'since' timestamp to get only new data.
+     * Poll for data from a specific instrument (Guide Section 14).
+     * @param instrumentId The identifier of the instrument.
+     * @param cursor The DeviceDataId to start polling from.
+     * @param limit Max records to return.
      */
-    @POST("harvester/poll")
-    suspend fun pollData(@Body request: PollingRequest): Response<PollingResponse>
+    @GET("api/v1/harvester/instruments/{id}/data")
+    suspend fun pollData(
+        @Path("id") instrumentId: String,
+        @Query("since") cursor: Long? = null,
+        @Query("limit") limit: Int = 100
+    ): Response<PollingResponse>
 
     /**
-     * Send data to a specific instrument.
+     * Send data to a specific instrument (Guide Section 14).
      */
-    @POST("harvester/send")
-    suspend fun sendData(@Body request: SendDataRequest): Response<SendDataResponse>
+    @POST("api/v1/harvester/instruments/{id}/data")
+    suspend fun sendData(
+        @Path("id") instrumentId: String,
+        @Body request: SendDataRequest
+    ): Response<SendDataResponse>
 
     /**
-     * Example authentication endpoint (Placeholder).
-     * In a real scenario, this might point to Keycloak.
+     * Keycloak token endpoint for OAuth2 password grant.
      */
-    @POST("auth/token")
-    suspend fun login(@Body credentials: Map<String, String>): Response<AuthResponse>
+    @FormUrlEncoded
+    @POST
+    suspend fun login(
+        @Url url: String,
+        @Field("grant_type") grantType: String,
+        @Field("client_id") clientId: String,
+        @Field("username") username: String,
+        @Field("password") password: String
+    ): Response<AuthResponse>
 }
