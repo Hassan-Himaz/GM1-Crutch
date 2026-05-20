@@ -20,14 +20,12 @@ def main():
 
     period_s = 1.0 / SAMPLE_HZ
 
-    # CSV header for serial logging/host parsers.
     print("mx,my,mz")
     print("Streaming fixed-rate data @ {} Hz".format(SAMPLE_HZ))
 
     while True:
         sample = mag.read_mag()
 
-        # One compact CSV row per sample (good for serial capture).
         print(
             "{mx:.3f},{my:.3f},{mz:.3f}".format(
                 mx=sample["mx"], my=sample["my"], mz=sample["mz"]
@@ -37,4 +35,3 @@ def main():
 
 
 main()
-
