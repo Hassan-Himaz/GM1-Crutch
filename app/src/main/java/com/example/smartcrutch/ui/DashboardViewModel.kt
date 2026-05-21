@@ -32,6 +32,8 @@ data class DashboardUiState(
     val syncStatus: String = "Disconnected",
     val liveLogs: List<String> = emptyList(),
     val isLiveFeedActive: Boolean = false,
+    val isParsingEnabled: Boolean = true,
+    val isDecodingEnabled: Boolean = true,
     val weightHistory: List<Float> = listOf(0.2f, 0.4f, 0.35f, 0.6f, 0.55f, 0.8f, 0.75f, 0.78f)
 )
 
@@ -49,6 +51,16 @@ class DashboardViewModel : ViewModel() {
 
     fun navigateTo(screen: Screen) {
         _uiState.value = _uiState.value.copy(currentScreen = screen)
+    }
+
+    fun toggleParsing(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isParsingEnabled = enabled)
+        addLog("Data parsing ${if (enabled) "ENABLED" else "DISABLED"}")
+    }
+
+    fun toggleDecoding(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isDecodingEnabled = enabled)
+        addLog("Base64 decoding ${if (enabled) "ENABLED" else "DISABLED"}")
     }
 
     fun syncData() {
@@ -103,12 +115,32 @@ class DashboardViewModel : ViewModel() {
 
     private fun processIncomingData(dataList: List<InstrumentData>) {
         dataList.sortedBy { it.deviceDataId }.forEach { data ->
-            val bytes = android.util.Base64.decode(data.dataValue, android.util.Base64.DEFAULT)
+            val currentState = _uiState.value
             
-            // Sensor data is at the end of the packet: 'a' [4B Hum] '\n' 'a' [4B Temp]
-            // Header length varies, but the payload suffix is always 11 bytes.
-            // Offset for Humidity: size - 10
-            // Offset for Temperature: size - 4
+            // 1. Toggle: Decoding
+            if (!currentState.isDecodingEnabled) {
+                addLog("Raw Base64: ${data.dataValue}")
+                return@forEach
+            }
+
+            val bytes = try {
+                android.util.Base64.decode(data.dataValue, android.util.Base64.DEFAULT)
+            } catch (e: Exception) {
+                addLog("Base64 Error: ${data.deviceDataId}")
+                return@forEach
+            }
+
+            // 2. Toggle: Parsing
+            if (!currentState.isParsingEnabled) {
+                val hex = bytes.joinToString("") { String.format("%02X", it) }
+                // Also try to show as string in case it's a new label
+                val text = String(bytes).replace(Regex("[^\\x20-\\x7E]"), ".")
+                addLog("Hex (${bytes.size}B): $hex")
+                addLog("Text: $text")
+                return@forEach
+            }
+
+            // Standard Parsing Logic
             val humidity = extractFloat(bytes, bytes.size - 10)
             val temperature = extractFloat(bytes, bytes.size - 4)
             
@@ -130,7 +162,7 @@ class DashboardViewModel : ViewModel() {
                 runPythonAnalytics(listOf(humidity.toDouble(), temperature.toDouble()))
             } else {
                 val hex = bytes.joinToString("") { String.format("%02X", it) }
-                addLog("Invalid Packet (${bytes.size}B): $hex")
+                addLog("Parse Fail (${bytes.size}B): $hex")
             }
         }
     }

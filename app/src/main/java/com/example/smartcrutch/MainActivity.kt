@@ -73,7 +73,12 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
             when (uiState.currentScreen) {
                 Screen.Home -> HomeScreen(uiState)
                 Screen.Progress -> ProgressScreen(uiState)
-                Screen.Sync -> SyncScreen(uiState, onSyncClick = { viewModel.syncData() })
+                Screen.Sync -> SyncScreen(
+                    uiState = uiState, 
+                    onSyncClick = { viewModel.syncData() },
+                    onToggleParsing = { enabled -> viewModel.toggleParsing(enabled) },
+                    onToggleDecoding = { enabled -> viewModel.toggleDecoding(enabled) }
+                )
                 Screen.Profile -> ProfileScreen(uiState)
             }
         }
@@ -388,14 +393,20 @@ fun AchievementsSection() {
 }
 
 @Composable
-fun SyncScreen(uiState: DashboardUiState, onSyncClick: () -> Unit) {
+fun SyncScreen(
+    uiState: DashboardUiState, 
+    onSyncClick: () -> Unit,
+    onToggleParsing: (Boolean) -> Unit,
+    onToggleDecoding: (Boolean) -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top
     ) {
+        Spacer(modifier = Modifier.height(20.dp))
         Icon(
             Icons.Default.Sync,
             contentDescription = null,
@@ -404,13 +415,6 @@ fun SyncScreen(uiState: DashboardUiState, onSyncClick: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(24.dp))
         Text("Data Synchronization", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            "Sync your crutch data with the server to keep your progress up to date.",
-            color = TextSecondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 32.dp)
-        )
         Spacer(modifier = Modifier.height(40.dp))
         
         Surface(
@@ -425,7 +429,39 @@ fun SyncScreen(uiState: DashboardUiState, onSyncClick: () -> Unit) {
             }
         }
         
-        Spacer(modifier = Modifier.height(40.dp))
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "DEBUG SETTINGS",
+            style = MaterialTheme.typography.labelLarge,
+            color = TextSecondary,
+            modifier = Modifier.align(Alignment.Start).padding(start = 8.dp)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Surface(
+            color = SurfaceNavy,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                SettingsToggleRow(
+                    label = "Base64 Decoding",
+                    description = "Enable to decode instrument payloads",
+                    isEnabled = uiState.isDecodingEnabled,
+                    onToggle = onToggleDecoding
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                SettingsToggleRow(
+                    label = "Data Parsing",
+                    description = "Extract floats from binary",
+                    isEnabled = uiState.isParsingEnabled,
+                    onToggle = onToggleParsing
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.weight(1f))
         
         Button(
             onClick = onSyncClick,
@@ -440,6 +476,31 @@ fun SyncScreen(uiState: DashboardUiState, onSyncClick: () -> Unit) {
                 Text("Sync Now", fontWeight = FontWeight.Bold)
             }
         }
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+fun SettingsToggleRow(label: String, description: String, isEnabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(description, color = TextSecondary, fontSize = 12.sp)
+        }
+        Switch(
+            checked = isEnabled,
+            onCheckedChange = onToggle,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = AccentGreen,
+                checkedTrackColor = AccentGreen.copy(alpha = 0.3f),
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = SurfaceNavy
+            )
+        )
     }
 }
 
