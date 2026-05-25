@@ -27,18 +27,23 @@ bool MagBMM150::begin() {
       tried[candidate] = true;
       address_ = candidate;
 
-      // BMM150 starts in suspend mode. Wake it before CHIP_ID read.
+      // BMM150 starts in suspend mode. Wake it into sleep mode first.
       if (!writeReg(REG_POWER, 0x01)) continue;
       delay(3);
       if (!isPresent()) continue;
 
-      // Put device in normal mode so data registers update continuously.
-      // 0x00 => normal mode, default ODR.
-      if (!writeReg(REG_OPMODE, 0x00)) continue;
-      // Minimal repetition settings for valid XYZ updates.
+      // Configure repetitions while still in SLEEP mode — the datasheet
+      // requires these registers to be written before entering normal mode.
+      // REPXY=9 repetitions, REPZ=15 repetitions (regular preset).
       if (!writeReg(REG_REP_XY, 0x04)) continue;
       if (!writeReg(REG_REP_Z, 0x0F)) continue;
-      delay(10);
+
+      // Now enter normal mode (continuous measurement at default 10 Hz ODR).
+      if (!writeReg(REG_OPMODE, 0x00)) continue;
+
+      // Wait for the first full measurement cycle to complete (110 ms > 1 period
+      // at 10 Hz) so data registers are valid on the first readRaw call.
+      delay(110);
       return true;
     }
   }

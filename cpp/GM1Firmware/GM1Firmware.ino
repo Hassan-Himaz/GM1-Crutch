@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <ArduinoBLE.h>
 #include <LSM6DS3.h>
+#include <MadgwickAHRS.h>
 #include <Wire.h>
 
 #include "src/MagBMM150.h"
@@ -8,6 +9,9 @@
 
 // Recording mode sampling period:
 constexpr uint32_t kRecordPeriodMs = 100;
+
+// Madgwick filter update rate — must match recording rate.
+constexpr float kSampleFreqHz = 1000.0f / kRecordPeriodMs;
 
 // Sleep mode sampling period: 
 constexpr uint32_t kSleepPeriodMs = 500;
@@ -28,22 +32,27 @@ constexpr uint32_t kI2CFreqHz = 100000;
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 MagBMM150 mag(Wire);
+Madgwick madgwick;
 
 
 BLEService        gm1Service("12345678-1234-5678-1234-56789abcdef0");
 BLECharacteristic gm1DataChar(
     "12345678-1234-5678-1234-56789abcdef1",
     BLERead | BLENotify,
-    22);  // uint32 seq + 9 × int16
+    28);  // max 28 bytes: uint32 seq + up to 12 × int16; actual length varies with enabled streams
 
 // state machine
 
 enum class State { SLEEPING, RECORDING, PAUSED };
-State state = State::RECORDING;
+State state = State::PAUSED;
 
 bool mag_ok = false;
 bool ble_ok = false;
 bool motion_enabled       = true;  // auto sleep/wake from accel motion
+bool accel_out_enabled    = true;  // serial/BLE only; IMU still read for Madgwick + motion
+bool gyro_out_enabled     = true;  // serial/BLE only; gyro still read for Madgwick
+bool orient_out_enabled   = true;  // serial/BLE: roll, pitch, yaw (Madgwick always runs)
+bool mag_out_enabled      = true;  // serial/BLE: mx, my, mz
 
 uint32_t last_sample_ms   = 0;
 uint32_t last_motion_ms   = 0;
@@ -68,32 +77,82 @@ float accelMag(float ax, float ay, float az) {
   return sqrtf(ax * ax + ay * ay + az * az);
 }
 
+// roll/pitch/yaw in degrees from Madgwick filter.
 void sendSample(float ax, float ay, float az,
                 float gx, float gy, float gz,
+                float roll, float pitch, float yaw,
                 int16_t mx, int16_t my, int16_t mz) {
-  // Serial CSV: seq first so packet loss is visible as a gap in seq numbers.
-  char line[112];
-  snprintf(line, sizeof(line),
-           "%lu,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%d,%d,%d",
-           seq, ax, ay, az, gx, gy, gz, mx, my, mz);
-  Serial.println(line);
+  // Serial CSV: seq first, then only enabled field groups.
+  Serial.print(seq);
+  if (accel_out_enabled) {
+    Serial.print(",");
+    Serial.print(ax, 4);
+    Serial.print(",");
+    Serial.print(ay, 4);
+    Serial.print(",");
+    Serial.print(az, 4);
+  }
+  if (gyro_out_enabled) {
+    Serial.print(",");
+    Serial.print(gx, 2);
+    Serial.print(",");
+    Serial.print(gy, 2);
+    Serial.print(",");
+    Serial.print(gz, 2);
+  }
+  if (orient_out_enabled) {
+    Serial.print(",");
+    Serial.print(roll, 2);
+    Serial.print(",");
+    Serial.print(pitch, 2);
+    Serial.print(",");
+    Serial.print(yaw, 2);
+  }
+  if (mag_out_enabled) {
+    Serial.print(",");
+    Serial.print(mx);
+    Serial.print(",");
+    Serial.print(my);
+    Serial.print(",");
+    Serial.print(mz);
+  }
+  Serial.println();
 
-  // BLE binary: uint32 seq + 9 × int16 = 22 bytes.
+  // BLE binary: uint32 seq + enabled int16 values (max 28 bytes).
   if (ble_ok && BLE.connected()) {
-    uint8_t payload[22];
-    uint32_t s = seq;
-    memcpy(payload, &s, 4);
-    int16_t vals[9] = {
-      static_cast<int16_t>(ax * 1000),
-      static_cast<int16_t>(ay * 1000),
-      static_cast<int16_t>(az * 1000),
-      static_cast<int16_t>(gx * 100),
-      static_cast<int16_t>(gy * 100),
-      static_cast<int16_t>(gz * 100),
-      mx, my, mz
-    };
-    memcpy(payload + 4, vals, 18);
-    gm1DataChar.writeValue(payload, sizeof(payload));
+    uint8_t payload[28];
+    size_t offset = 0;
+    memcpy(payload + offset, &seq, 4);
+    offset += 4;
+
+    int16_t vals[12];
+    uint8_t val_count = 0;
+    if (accel_out_enabled) {
+      vals[val_count++] = static_cast<int16_t>(ax * 1000.0f);
+      vals[val_count++] = static_cast<int16_t>(ay * 1000.0f);
+      vals[val_count++] = static_cast<int16_t>(az * 1000.0f);
+    }
+    if (gyro_out_enabled) {
+      vals[val_count++] = static_cast<int16_t>(gx * 100.0f);
+      vals[val_count++] = static_cast<int16_t>(gy * 100.0f);
+      vals[val_count++] = static_cast<int16_t>(gz * 100.0f);
+    }
+    if (orient_out_enabled) {
+      vals[val_count++] = static_cast<int16_t>(roll * 10.0f);
+      vals[val_count++] = static_cast<int16_t>(pitch * 10.0f);
+      vals[val_count++] = static_cast<int16_t>(yaw * 10.0f);
+    }
+    if (mag_out_enabled) {
+      vals[val_count++] = mx;
+      vals[val_count++] = my;
+      vals[val_count++] = mz;
+    }
+
+    if (val_count > 0) {
+      memcpy(payload + offset, vals, static_cast<size_t>(val_count) * sizeof(int16_t));
+      offset += static_cast<size_t>(val_count) * sizeof(int16_t);
+    }
+    gm1DataChar.writeValue(payload, offset);
   }
 
   ++seq;
@@ -130,6 +189,18 @@ void handleSerialCommand() {
       last_motion_ms = millis();
     }
     Serial.println(motion_enabled ? "# MOTION ON" : "# MOTION OFF");
+  } else if (cmd == 'a' || cmd == 'A') {
+    accel_out_enabled = !accel_out_enabled;
+    Serial.println(accel_out_enabled ? "# ACCEL OUT ON" : "# ACCEL OUT OFF");
+  } else if (cmd == 'y' || cmd == 'Y') {
+    gyro_out_enabled = !gyro_out_enabled;
+    Serial.println(gyro_out_enabled ? "# GYRO OUT ON" : "# GYRO OUT OFF");
+  } else if (cmd == 'o' || cmd == 'O') {
+    orient_out_enabled = !orient_out_enabled;
+    Serial.println(orient_out_enabled ? "# ORIENT OUT ON" : "# ORIENT OUT OFF");
+  } else if (cmd == 'g' || cmd == 'G') {
+    mag_out_enabled = !mag_out_enabled;
+    Serial.println(mag_out_enabled ? "# MAG OUT ON" : "# MAG OUT OFF");
   }
 }
 
@@ -167,6 +238,8 @@ void setup() {
 
   mag_ok = mag.begin();
 
+  madgwick.begin(kSampleFreqHz);
+
   if (!BLE.begin()) {
     ble_ok = false;
   } else {
@@ -179,8 +252,11 @@ void setup() {
     ble_ok = true;
   }
 
-  Serial.println("seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_raw,my_raw,mz_raw");
-  Serial.println("# Commands: s=start  p=pause  m=toggle motion sleep/wake");
+  Serial.println("# BOOT: init complete — send 's' to start recording");
+  Serial.println("seq,[ax_g,ay_g,az_g if accel ON],[gx_dps,gy_dps,gz_dps if gyro ON],"
+                 "[roll_deg,pitch_deg,yaw_deg if orient ON],[mx_raw,my_raw,mz_raw if mag ON]");
+  Serial.println("# Commands: s=start  p=pause  m=motion sleep/wake");
+  Serial.println("#            a=accel out  y=gyro out  o=orient(roll/pitch/yaw) out  g=mag out");
 
   const uint32_t now = millis();
   last_sample_ms = now;
@@ -221,10 +297,14 @@ void loop() {
     }
     last_sample_ms = now;
 
-    // Light accel poll to detect motion.
+    // Poll IMU for motion detection and keep Madgwick filter fresh during sleep.
     const float ax = imu.readFloatAccelX();
     const float ay = imu.readFloatAccelY();
     const float az = imu.readFloatAccelZ();
+    const float gx = imu.readFloatGyroX();
+    const float gy = imu.readFloatGyroY();
+    const float gz = imu.readFloatGyroZ();
+    madgwick.updateIMU(gx, gy, gz, ax, ay, az);
 
     if (accelMag(ax, ay, az) >= kMotionThresholdG) {
       state = State::RECORDING;
@@ -251,7 +331,7 @@ void loop() {
   }
   last_sample_ms = now;
 
-  // Read sensors.
+  // Always read IMU — output toggles (a/y/o) only affect serial/BLE, not Madgwick.
   const float ax = imu.readFloatAccelX();
   const float ay = imu.readFloatAccelY();
   const float az = imu.readFloatAccelZ();
@@ -259,10 +339,16 @@ void loop() {
   const float gy = imu.readFloatGyroY();
   const float gz = imu.readFloatGyroZ();
 
-  int16_t mx = 0, my = 0, mz = 0;
-  if (mag_ok) mag.readRaw(mx, my, mz);
+  // Madgwick always uses accel + gyro regardless of which streams are enabled.
+  madgwick.updateIMU(gx, gy, gz, ax, ay, az);
+  const float roll  = madgwick.getRoll();
+  const float pitch = madgwick.getPitch();
+  const float yaw   = madgwick.getYaw();
 
-  sendSample(ax, ay, az, gx, gy, gz, mx, my, mz);
+  int16_t mx = 0, my = 0, mz = 0;
+  if (mag_ok && mag_out_enabled) mag.readRaw(mx, my, mz);
+
+  sendSample(ax, ay, az, gx, gy, gz, roll, pitch, yaw, mx, my, mz);
 
   if (motion_enabled) {
     // Update motion timer.
