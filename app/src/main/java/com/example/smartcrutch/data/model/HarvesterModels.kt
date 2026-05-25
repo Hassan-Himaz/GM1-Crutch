@@ -12,7 +12,7 @@ data class InstrumentData(
     @SerializedName("timestamp") val timestamp: String,
     @SerializedName("timeHandled") val timeHandled: String,
     @SerializedName("packetType") val packetType: Int,
-    @SerializedName("instrumentType") val instrumentType: String
+    @SerializedName("instrumentType") val instrumentType: String?
 )
 
 /**

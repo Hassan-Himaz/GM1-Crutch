@@ -4,7 +4,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -16,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,7 +29,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -59,6 +58,29 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+
+    // Permission Launcher
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        // Handle permissions
+    }
+
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            permissionLauncher.launch(arrayOf(
+                android.Manifest.permission.BLUETOOTH_SCAN,
+                android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ))
+        } else {
+            permissionLauncher.launch(arrayOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ))
+        }
+    }
 
     Scaffold(
         bottomBar = { 
@@ -76,10 +98,21 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
                 Screen.Sync -> SyncScreen(
                     uiState = uiState, 
                     onSyncClick = { viewModel.syncData() },
-                    onToggleParsing = { enabled -> viewModel.toggleParsing(enabled) },
-                    onToggleDecoding = { enabled -> viewModel.toggleDecoding(enabled) }
+                    onToggleRawStream = { enabled -> viewModel.toggleRawStream(enabled) },
+                    onToggleExperimentalDecoding = { enabled -> viewModel.toggleExperimentalDecoding(enabled) }
                 )
                 Screen.Profile -> ProfileScreen(uiState)
+                Screen.Direct -> DirectConnectScreen(
+                    uiState = uiState,
+                    onScanClick = { viewModel.startBleScan() },
+                    onConnectClick = { device: android.bluetooth.BluetoothDevice -> viewModel.connectToDevice(device, context) },
+                    onDisconnectClick = { viewModel.disconnectBle() },
+                    onStartRecording = { viewModel.startRecording(context) },
+                    onStopRecording = { viewModel.stopRecording() },
+                    onLabelChange = { gait, terrain, patient -> viewModel.setBatchLabels(gait, terrain, patient) },
+                    onMetadataChange = { age, gender, weight, leg, name -> viewModel.setPatientMetadata(age, gender, weight, leg, name) },
+                    onShareClick = { viewModel.shareLatestData(context) }
+                )
             }
         }
     }
@@ -277,24 +310,92 @@ fun MetricsGrid(uiState: DashboardUiState) {
                 },
                 footer = "Matches prescription"
             )
+            val smartTitle = when(uiState.lastReceivedType) {
+                "GM1" -> "IMU + Magnetometer"
+                "SENSOR" -> "Ambient Status"
+                "DIRECT" -> "Direct BLE (GM1)"
+                else -> "Data Stream"
+            }
             MetricCard(
-                title = "Ambient Status",
+                title = smartTitle,
                 modifier = Modifier.weight(1f),
                 accentColor = AccentOrange,
                 content = {
                     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Thermostat, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(16.dp))
-                            Text(String.format(java.util.Locale.US, "%.1f°C", uiState.temperature), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.WaterDrop, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
-                            Text(String.format(java.util.Locale.US, "%.1f%% Hum", uiState.humidity), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        when (uiState.lastReceivedType) {
+                            "GM1" -> {
+                                val data = uiState.latestGm1Data ?: emptyMap()
+                                Text(
+                                    text = String.format(java.util.Locale.US, "A: %.4f, %.4f, %.4f", data["ax_g"], data["ay_g"], data["az_g"]),
+                                    color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = String.format(java.util.Locale.US, "G: %.2f, %.2f, %.2f", data["gx_dps"], data["gy_dps"], data["gz_dps"]),
+                                    color = TextPrimary, fontSize = 11.sp
+                                )
+                                Text(
+                                    text = String.format(java.util.Locale.US, "M: %d, %d, %d", data["mx_raw"], data["my_raw"], data["mz_raw"]),
+                                    color = AccentOrange, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Seq: ${data["seq"]} | 10 pts",
+                                    color = TextSecondary, fontSize = 9.sp
+                                )
+                            }
+                            "DIRECT" -> {
+                                val data = uiState.directImuData
+                                Text(
+                                    text = String.format(java.util.Locale.US, "A: %.4f, %.4f, %.4f", data["ax"], data["ay"], data["az"]),
+                                    color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = String.format(java.util.Locale.US, "G: %.2f, %.2f, %.2f", data["gx"], data["gy"], data["gz"]),
+                                    color = TextPrimary, fontSize = 11.sp
+                                )
+                                Text(
+                                    text = String.format(java.util.Locale.US, "M: %d, %d, %d", data["mx"]?.toInt() ?: 0, data["my"]?.toInt() ?: 0, data["mz"]?.toInt() ?: 0),
+                                    color = AccentOrange, fontSize = 11.sp
+                                )
+                            }
+                            "SENSOR" -> {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Thermostat, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(16.dp))
+                                    Text(String.format(java.util.Locale.US, "%.1f°C", uiState.temperature), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.WaterDrop, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
+                                    Text(String.format(java.util.Locale.US, "%.1f%% Hum", uiState.humidity), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                }
+                            }
+                            else -> {
+                                if (uiState.latestNumbers.isEmpty()) {
+                                    Text("Waiting for data...", color = TextSecondary, fontSize = 12.sp)
+                                } else {
+                                    Text(
+                                        text = uiState.latestNumbers.joinToString(", "),
+                                        color = TextPrimary,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 16.sp
+                                    )
+                                    Text(
+                                        text = "${uiState.latestNumbers.size} values total",
+                                        color = TextSecondary,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 },
-                footer = "Sensors active"
+                footer = when(uiState.lastReceivedType) {
+                    "GM1" -> "Full 9-Axis + Seq"
+                    "SENSOR" -> "Environmental"
+                    else -> "Numbers extracted"
+                }
             )
         }
     }
@@ -396,8 +497,8 @@ fun AchievementsSection() {
 fun SyncScreen(
     uiState: DashboardUiState, 
     onSyncClick: () -> Unit,
-    onToggleParsing: (Boolean) -> Unit,
-    onToggleDecoding: (Boolean) -> Unit
+    onToggleRawStream: (Boolean) -> Unit,
+    onToggleExperimentalDecoding: (Boolean) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -446,17 +547,17 @@ fun SyncScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 SettingsToggleRow(
-                    label = "Base64 Decoding",
-                    description = "Enable to decode instrument payloads",
-                    isEnabled = uiState.isDecodingEnabled,
-                    onToggle = onToggleDecoding
+                    label = "Raw Data Stream",
+                    description = "View unparsed byte sequences",
+                    isEnabled = uiState.isRawStreamEnabled,
+                    onToggle = onToggleRawStream
                 )
                 HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
                 SettingsToggleRow(
-                    label = "Data Parsing",
-                    description = "Extract floats from binary",
-                    isEnabled = uiState.isParsingEnabled,
-                    onToggle = onToggleParsing
+                    label = "Experimental Binary",
+                    description = "Decode <Hffffffhhh format",
+                    isEnabled = uiState.isExperimentalDecodingEnabled,
+                    onToggle = onToggleExperimentalDecoding
                 )
             }
         }
@@ -830,6 +931,17 @@ fun BottomNavBar(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
             )
         )
         NavigationBarItem(
+            icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
+            label = { Text("Direct") },
+            selected = currentScreen == Screen.Direct,
+            onClick = { onNavigate(Screen.Direct) },
+            colors = NavigationBarItemDefaults.colors(
+                selectedIconColor = AccentBlue,
+                selectedTextColor = AccentBlue,
+                indicatorColor = AccentBlue.copy(alpha = 0.1f)
+            )
+        )
+        NavigationBarItem(
             icon = { Icon(Icons.Default.Sync, contentDescription = null) },
             label = { Text("Sync") },
             selected = currentScreen == Screen.Sync,
@@ -861,6 +973,542 @@ fun LiveFeedPreview() {
         Box(modifier = Modifier.background(BackgroundNavy).padding(16.dp)) {
             LiveServerFeedSection(listOf("[14:20:01] Connected to server.", "[14:20:05] Received data: 45kg pressure"))
         }
+    }
+}
+
+@Composable
+fun DirectConnectScreen(
+    uiState: DashboardUiState,
+    onScanClick: () -> Unit,
+    onConnectClick: (android.bluetooth.BluetoothDevice) -> Unit,
+    onDisconnectClick: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+    onLabelChange: (String, String, String) -> Unit,
+    onMetadataChange: (String, String, String, String, String) -> Unit,
+    onShareClick: () -> Unit
+) {
+    val context = LocalContext.current
+    var gaitText by remember { mutableStateOf(uiState.batchGait) }
+    var terrainText by remember { mutableStateOf(uiState.batchTerrain) }
+    var patientIdText by remember { mutableStateOf(uiState.patientId) }
+    
+    var ageText by remember { mutableStateOf(uiState.patientAge) }
+    var genderText by remember { mutableStateOf(uiState.patientGender) }
+    var weightText by remember { mutableStateOf(uiState.patientWeight) }
+    var legText by remember { mutableStateOf(uiState.injuredLeg) }
+    var nameText by remember { mutableStateOf(uiState.patientName) }
+    
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        item { Spacer(modifier = Modifier.height(10.dp)) }
+        item {
+            Text(
+                "DIRECT CONNECTION",
+                color = TextPrimary,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "Connect directly to GM1-Node via BLE",
+                color = TextSecondary,
+                fontSize = 14.sp
+            )
+            Text(
+                "Note: Location must be ON in system settings.",
+                color = AccentOrange.copy(alpha = 0.7f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "If device not found: Ensure other Hub/Bridge apps are DISCONNECTED.",
+                color = Color.Red.copy(alpha = 0.7f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        // Status Card
+        item {
+            Surface(
+                color = SurfaceNavy,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Connection Status", color = TextSecondary, fontSize = 12.sp)
+                        Text(
+                            uiState.bleStatus,
+                            color = if (uiState.isBleConnected) AccentGreen else TextPrimary,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Icon(
+                        if (uiState.isBleConnected) Icons.Default.Bluetooth else Icons.Default.BluetoothDisabled,
+                        contentDescription = null,
+                        tint = if (uiState.isBleConnected) AccentGreen else AccentBlue,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+            }
+        }
+
+        if (uiState.isBleConnected) {
+            // Metadata Section
+            item {
+                Surface(
+                    color = SurfaceNavy,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("PATIENT METADATA", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        OutlinedTextField(
+                            value = patientIdText,
+                            onValueChange = { 
+                                patientIdText = it
+                                onMetadataChange(ageText, genderText, weightText, legText, nameText)
+                                onLabelChange(gaitText, terrainText, it)
+                            },
+                            label = { Text("Associated Patient ID", fontSize = 10.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = nameText,
+                            onValueChange = { 
+                                nameText = it
+                                onMetadataChange(ageText, genderText, weightText, legText, it)
+                            },
+                            label = { Text("Patient Name (Optional)", fontSize = 10.sp) },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentBlue,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            )
+                        )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = ageText,
+                                onValueChange = { 
+                                    ageText = it
+                                    onMetadataChange(it, genderText, weightText, legText, nameText)
+                                },
+                                label = { Text("Age", fontSize = 10.sp) },
+                                modifier = Modifier.weight(1f),
+                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AccentBlue,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                )
+                            )
+                            DropdownSelector(
+                                label = "Gender",
+                                options = listOf("Male", "Female", "Other", "Prefer not to say"),
+                                selectedOption = genderText,
+                                onOptionSelected = {
+                                    genderText = it
+                                    onMetadataChange(ageText, it, weightText, legText, nameText)
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = weightText,
+                                onValueChange = { 
+                                    weightText = it
+                                    onMetadataChange(ageText, genderText, it, legText, nameText)
+                                },
+                                label = { Text("Weight (kg)", fontSize = 10.sp) },
+                                modifier = Modifier.weight(1f),
+                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AccentGreen,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                )
+                            )
+                            DropdownSelector(
+                                label = "Injured Leg",
+                                options = listOf("Left", "Right", "Both", "None"),
+                                selectedOption = legText,
+                                onOptionSelected = {
+                                    legText = it
+                                    onMetadataChange(ageText, genderText, weightText, it, nameText)
+                                },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Labeling Section
+            item {
+                Surface(
+                    color = SurfaceNavy,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("BATCH LABELS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = gaitText,
+                                onValueChange = { 
+                                    gaitText = it
+                                    onLabelChange(it, terrainText, patientIdText)
+                                },
+                                label = { Text("Gait Type", fontSize = 10.sp) },
+                                modifier = Modifier.weight(1f),
+                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AccentBlue,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                )
+                            )
+                            OutlinedTextField(
+                                value = terrainText,
+                                onValueChange = { 
+                                    terrainText = it
+                                    onLabelChange(gaitText, it, patientIdText)
+                                },
+                                label = { Text("Terrain", fontSize = 10.sp) },
+                                modifier = Modifier.weight(1f),
+                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AccentPurple,
+                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Recording Controls
+            item {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        color = if (uiState.isRecording) Color.Red.copy(alpha = 0.1f) else SurfaceNavy,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (uiState.isRecording) "Recording Data..." else "Database Logging",
+                                    color = if (uiState.isRecording) Color.Red else TextPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (uiState.isRecording) {
+                                    Text("Saving to Documents folder", color = TextSecondary, fontSize = 10.sp)
+                                }
+                            }
+                            Button(
+                                onClick = { if (uiState.isRecording) onStopRecording() else onStartRecording() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (uiState.isRecording) Color.Red else AccentBlue
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(if (uiState.isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(if (uiState.isRecording) "Stop" else "Start Log")
+                            }
+                        }
+                    }
+                    
+                    if (uiState.patientId.isNotBlank() && !uiState.isRecording) {
+                        Button(
+                            onClick = onShareClick,
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().height(56.dp)
+                        ) {
+                            Icon(Icons.Default.Email, null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Email Patient History", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // Real-time Data Card
+            item {
+                Surface(
+                    color = SurfaceNavy,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Text("Current Values", color = TextSecondary, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        
+                        val data = uiState.directImuData
+                        if (data.isNotEmpty()) {
+                            DataRow("Accel", String.format(java.util.Locale.US, "X: %.4f, Y: %.4f, Z: %.4f", data["ax"], data["ay"], data["az"]))
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
+                            DataRow("Gyro", String.format(java.util.Locale.US, "X: %.2f, Y: %.2f, Z: %.2f", data["gx"], data["gy"], data["gz"]))
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
+                            DataRow("Mag", String.format(java.util.Locale.US, "X: %d, Y: %d, Z: %d", data["mx"]?.toInt() ?: 0, data["my"]?.toInt() ?: 0, data["mz"]?.toInt() ?: 0))
+                        } else {
+                            Text("Waiting for notification data...", color = TextSecondary, fontSize = 14.sp)
+                        }
+                    }
+                }
+            }
+
+            // Charts Section
+            if (uiState.directHistory.isNotEmpty()) {
+                item {
+                    Text("REAL-TIME GRAPHS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                }
+                item {
+                    ChartCard("Accelerometer (g)", uiState.directHistory, listOf("ax", "ay", "az"), listOf(AccentGreen, AccentBlue, AccentOrange))
+                }
+                item {
+                    ChartCard("Gyroscope (dps)", uiState.directHistory, listOf("gx", "gy", "gz"), listOf(AccentPurple, Color.Cyan, Color.Magenta))
+                }
+                item {
+                    ChartCard("Magnetometer (raw)", uiState.directHistory, listOf("mx", "my", "mz"), listOf(AccentOrange, Color.Yellow, Color.Red))
+                }
+            }
+
+            item {
+                Button(
+                    onClick = onDisconnectClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.2f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Disconnect Device", color = Color.Red)
+                }
+            }
+        } else {
+            // Scan Section
+            item {
+                Button(
+                    onClick = onScanClick,
+                    enabled = !uiState.isScanning,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    if (uiState.isScanning) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Scanning...")
+                    } else {
+                        Icon(Icons.Default.Search, contentDescription = null)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("Scan for GM1-Node")
+                    }
+                }
+            }
+
+            item {
+                Text("DISCOVERED DEVICES", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+            }
+            
+            items(uiState.discoveredDevices.size) { index ->
+                val device = uiState.discoveredDevices[index]
+                DeviceItem(device, onConnectClick)
+            }
+        }
+        item { Spacer(modifier = Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
+fun ChartCard(title: String, history: List<Map<String, Float>>, keys: List<String>, colors: List<Color>) {
+    Surface(
+        color = SurfaceNavy,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(16.dp))
+            MultiAxisChart(
+                history = history,
+                keys = keys,
+                colors = colors,
+                modifier = Modifier.fillMaxWidth().height(120.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                keys.forEachIndexed { i, key ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(colors[i]))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(key.uppercase(), color = TextSecondary, fontSize = 10.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MultiAxisChart(
+    history: List<Map<String, Float>>,
+    keys: List<String>,
+    colors: List<Color>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        if (history.size < 2) return@Canvas
+
+        val width = size.width
+        val height = size.height
+        val spacing = width / (history.size - 1)
+
+        keys.forEachIndexed { keyIndex, key ->
+            val color = colors[keyIndex]
+            val values = history.map { it[key] ?: 0f }
+            
+            // Find min/max for scaling this specific chart type
+            val minVal = values.minOrNull() ?: 0f
+            val maxVal = values.maxOrNull() ?: 1f
+            val range = (maxVal - minVal).coerceAtLeast(0.1f)
+
+            val path = Path().apply {
+                values.forEachIndexed { index, value ->
+                    val x = index * spacing
+                    // Normalize value to 0..1 range within the chart height
+                    val normalized = (value - minVal) / range
+                    val y = height - (normalized * height)
+                    if (index == 0) moveTo(x, y) else lineTo(x, y)
+                }
+            }
+
+            drawPath(
+                path = path,
+                color = color,
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+fun DeviceItem(device: android.bluetooth.BluetoothDevice, onConnect: (android.bluetooth.BluetoothDevice) -> Unit) {
+    Surface(
+        color = SurfaceNavy,
+        shape = RoundedCornerShape(12.dp),
+        onClick = { onConnect(device) }
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentBlue)
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                // Safety for device name access
+                val name = try { device.name ?: "Unknown Device" } catch (e: SecurityException) { "Restricted" }
+                Text(name, color = TextPrimary, fontWeight = FontWeight.Bold)
+                Text(device.address, color = TextSecondary, fontSize = 12.sp)
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
+        }
+    }
+}
+
+@Composable
+fun DropdownSelector(
+    label: String,
+    options: List<String>,
+    selectedOption: String,
+    onOptionSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        OutlinedTextField(
+            value = selectedOption,
+            onValueChange = { },
+            readOnly = true,
+            label = { Text(label, fontSize = 10.sp) },
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+            trailingIcon = {
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        if (expanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = TextSecondary
+                    )
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = AccentBlue,
+                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+            )
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(SurfaceNavy)
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option, color = TextPrimary) },
+                    onClick = {
+                        onOptionSelected(option)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun DataRow(label: String, value: String) {
+    Column {
+        Text(label, color = AccentBlue, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text(value, color = TextPrimary, fontSize = 14.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
     }
 }
 
