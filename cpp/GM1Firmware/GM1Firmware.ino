@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <ArduinoBLE.h>
 #include <LSM6DS3.h>
 #include <MadgwickAHRS.h>
 #include <Wire.h>
@@ -35,11 +34,6 @@ MagBMM150 mag(Wire);
 Madgwick madgwick;
 
 
-BLEService        gm1Service("12345678-1234-5678-1234-56789abcdef0");
-BLECharacteristic gm1DataChar(
-    "12345678-1234-5678-1234-56789abcdef1",
-    BLERead | BLENotify,
-    28);  // max 28 bytes: uint32 seq + up to 12 × int16; actual length varies with enabled streams
 
 // state machine
 
@@ -47,12 +41,12 @@ enum class State { SLEEPING, RECORDING, PAUSED };
 State state = State::PAUSED;
 
 bool mag_ok = false;
-bool ble_ok = false;
 bool motion_enabled       = true;  // auto sleep/wake from accel motion
-bool accel_out_enabled    = true;  // serial/BLE only; IMU still read for Madgwick + motion
-bool gyro_out_enabled     = true;  // serial/BLE only; gyro still read for Madgwick
-bool orient_out_enabled   = true;  // serial/BLE: roll, pitch, yaw (Madgwick always runs)
-bool mag_out_enabled      = true;  // serial/BLE: mx, my, mz
+// Note: these toggles mask Serial CSV output only.
+bool accel_out_enabled    = true;  // Serial CSV: ax, ay, az
+bool gyro_out_enabled     = true;  // Serial CSV: gx, gy, gz
+bool orient_out_enabled   = true;  // Serial CSV: roll, pitch, yaw
+bool mag_out_enabled      = true;  // Serial CSV: mx, my, mz
 
 uint32_t last_sample_ms   = 0;
 uint32_t last_motion_ms   = 0;
@@ -61,6 +55,7 @@ bool     led_on           = false;
 uint32_t seq              = 0;  // packet sequence counter for loss detection
 
 // helpers
+
 
 void enableSenseRails() {
   pinMode(D30, OUTPUT); digitalWrite(D30, HIGH);  // VDD_ENV_ENABLE
@@ -117,43 +112,6 @@ void sendSample(float ax, float ay, float az,
     Serial.print(mz);
   }
   Serial.println();
-
-  // BLE binary: uint32 seq + enabled int16 values (max 28 bytes).
-  if (ble_ok && BLE.connected()) {
-    uint8_t payload[28];
-    size_t offset = 0;
-    memcpy(payload + offset, &seq, 4);
-    offset += 4;
-
-    int16_t vals[12];
-    uint8_t val_count = 0;
-    if (accel_out_enabled) {
-      vals[val_count++] = static_cast<int16_t>(ax * 1000.0f);
-      vals[val_count++] = static_cast<int16_t>(ay * 1000.0f);
-      vals[val_count++] = static_cast<int16_t>(az * 1000.0f);
-    }
-    if (gyro_out_enabled) {
-      vals[val_count++] = static_cast<int16_t>(gx * 100.0f);
-      vals[val_count++] = static_cast<int16_t>(gy * 100.0f);
-      vals[val_count++] = static_cast<int16_t>(gz * 100.0f);
-    }
-    if (orient_out_enabled) {
-      vals[val_count++] = static_cast<int16_t>(roll * 10.0f);
-      vals[val_count++] = static_cast<int16_t>(pitch * 10.0f);
-      vals[val_count++] = static_cast<int16_t>(yaw * 10.0f);
-    }
-    if (mag_out_enabled) {
-      vals[val_count++] = mx;
-      vals[val_count++] = my;
-      vals[val_count++] = mz;
-    }
-
-    if (val_count > 0) {
-      memcpy(payload + offset, vals, static_cast<size_t>(val_count) * sizeof(int16_t));
-      offset += static_cast<size_t>(val_count) * sizeof(int16_t);
-    }
-    gm1DataChar.writeValue(payload, offset);
-  }
 
   ++seq;
 }
@@ -240,18 +198,6 @@ void setup() {
 
   madgwick.begin(kSampleFreqHz);
 
-  if (!BLE.begin()) {
-    ble_ok = false;
-  } else {
-    BLE.setLocalName("GM1-Node");
-    BLE.setDeviceName("GM1-Node");
-    BLE.setAdvertisedService(gm1Service);
-    gm1Service.addCharacteristic(gm1DataChar);
-    BLE.addService(gm1Service);
-    BLE.advertise();
-    ble_ok = true;
-  }
-
   Serial.println("# BOOT: init complete — send 's' to start recording");
   Serial.println("seq,[ax_g,ay_g,az_g if accel ON],[gx_dps,gy_dps,gz_dps if gyro ON],"
                  "[roll_deg,pitch_deg,yaw_deg if orient ON],[mx_raw,my_raw,mz_raw if mag ON]");
@@ -267,7 +213,6 @@ void setup() {
 // loop
 
 void loop() {
-  if (ble_ok) BLE.poll();
   handleSerialCommand();
 
   const uint32_t now = millis();
@@ -331,7 +276,7 @@ void loop() {
   }
   last_sample_ms = now;
 
-  // Always read IMU — output toggles (a/y/o) only affect serial/BLE, not Madgwick.
+  // Always read IMU — output toggles (a/y/o) only affect Serial output.
   const float ax = imu.readFloatAccelX();
   const float ay = imu.readFloatAccelY();
   const float az = imu.readFloatAccelZ();
@@ -345,8 +290,10 @@ void loop() {
   const float pitch = madgwick.getPitch();
   const float yaw   = madgwick.getYaw();
 
+  // Always read the magnetometer; mag_out_enabled only suppresses
+  // the Serial CSV columns.
   int16_t mx = 0, my = 0, mz = 0;
-  if (mag_ok && mag_out_enabled) mag.readRaw(mx, my, mz);
+  if (mag_ok) mag.readRaw(mx, my, mz);
 
   sendSample(ax, ay, az, gx, gy, gz, roll, pitch, yaw, mx, my, mz);
 
