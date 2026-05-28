@@ -1,0 +1,49 @@
+GM1 report:
+
+Week 1.
+
+Time breakdown: 
+1. Design of mechanical force sensing [15 hours]
+2. Setup of electronics and Seeed Board [5 hours]
+3. Software considerations to inform mechanical design. [5 hours]
+
+Mechanical and Electrical Design:
+
+This week we tried to get force sensing working. We had opted for a lower cost hall effect setup at the expense of higher mechanical complexity and longer setup times as opposed to buying an off the shelf load cell but with the benefit of lower costs and perhaps a more sleek form factor.
+
+Initialy we were going to use a spring, as we were unsure of the noise associated with the magnetometer (we first specified a melexis unit but we got a df robot bmmm150 which is ideal for our use). Once we setup the board we realised we had less noise than anticipated so to achieve goals of long term force sensing ( detailed in software considerations section) of roughly 10kg accuracy for 50 kg so we could build in less deflection - only 1mm would be needed to reach this but to be safe we would build in 2mm of deflection. We observed the noise in the magnetometer to be +-20 muTeslas. Assuming a 1/r^3 relationship and a max magnetic field readout of 2500mu teslas we can see that:... This result also held up to detailed experimental analysis - detailed in graph for some different types of magnets.
+Once we realised less deflection would be needed we switched compression material from a spring to rubber. We accepted the hysteresis, variable strain rate, and potential wear as a disadvantage in return for simpler mechanical design, greater durability, and simpler force transfer with less weak points. We had rubber bungs to use but thought that we could make a more elegant design with 3D printed TPU, controlling precisely the deformation and the placement of the magnets/sensors as needed. We expected that in production we would just cast a tpu/rubber foot to the required design, as one of the mentors said this was what would be done.
+
+It took longer than expected to print the tpu as it was difficult to configure the right settings for the printer, and find a printer that was willing to print TPU. Once printed, initial results were promising, with a high degree of sensitivity of the magnet to force and a lower than expected drift + noise. we tried testing it with weights but this was not effective at testing the results, the weights kept falling off, and we had no idea about real displacement. We then tested on the instrom machine, this showed more deflection than we expected, but strong sensing results: as the graph shows it was surprisingly linear - but with significant non linear parts as the foot settled on the floor(the 3d printed base was not entirely flat). The real concern was the variable strain rate response: we did not realise it would be so significant so as to render the force-displacement function non invertible. Theoretical models claim this is due to viscoelasticity: essentially a damper and a spring in parallel, leading to a function of displacement and velocity to get force. Not Ideal. 
+
+It is now Thursday and, due to the delays in 3D printing and (primarily) the unsatisfactory instrom results, we are now behind on our force sensing timeline. With hindsight the timeline was unreasonable due to the complexity of the design and the ambition of undercutting off the shelf prices 5x.
+
+Software considerations:
+
+Concurrently with mechanical design, we worked closely with the software team, both in helping everyone understand the integrated system, and in evaluating force sensing to better constrain the mechanical design.
+
+I spent a couple of hours segmenting the types of crutch gaits: one legged, two point, 3 point ,4 points; inorder to understand how to detect and evaluate them. We concluded that detection could be achieved just with the IMUs and long term force sensing (to assess recovery and improper use on injured feet) could be found just with peak sustained load on the crutch. Sensor fusion was not required and it was agreed that a 10 kg range of accuracy was fine.
+
+Later, we also decicided it would be usefule to have a results of how the force changed during impact, though absolute accuracy was not required a high sampling rate (not specified) would be useful to accurately analyse the shape of the impact.
+
+
+Decided future:
+
+After the setbacks on Thursday we held a team meeting to recalibrate. Key outcomes from this:
+1. 3D printed TPU may increase the variable rate issue - so pivoting to premade rubber/silicon sheet could mitigate the issue.
+2. If sheet rubber still has these issues then the best solution would be to test over the range of values and make a 3d lookup table of displacement, velocity, and temperature.
+3. A spring, or cantilever would solve our non linearity problems.
+
+Actiosns:
+
+1. Build new modular design to test more rubbers and potential cantilevers. Modular design should be able to easily switch from testing mode (flat plate on the top) to being attached to the cructch.
+2. test built rubbers in instrom on Wednesday.
+
+Next week aim:
+ build a working prototype by Thursday.
+Risks:
+
+Non linearities in the sensor make force sensing unviable (low chance, large impact)
+
+Lack of force sensing early means software has compressed development time.
+
