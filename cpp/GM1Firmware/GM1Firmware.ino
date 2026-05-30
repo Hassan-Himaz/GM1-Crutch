@@ -1,12 +1,12 @@
 #include <Arduino.h>
+#include <DFRobot_BMM150.h>
 #include <LSM6DS3.h>
 #include <MadgwickAHRS.h>
 #include <Wire.h>
-#include "src/MagBMM150.h"
 
 
 // Raw capture sampling period.
-constexpr uint32_t kRecordPeriodMs = 20;  // 50 Hz
+constexpr uint32_t kRecordPeriodMs = 33;  // ~30 Hz
 constexpr float kSampleFreqHz = 1000.0f / kRecordPeriodMs;
 
 // Sleep mode sampling period.
@@ -26,7 +26,7 @@ constexpr uint32_t kI2CFreqHz = 100000;
 
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
-MagBMM150 mag(Wire);
+DFRobot_BMM150_I2C mag(&Wire, I2C_ADDRESS_4);
 Madgwick madgwick;
 
 enum class State { SLEEPING, RECORDING, PAUSED };
@@ -63,7 +63,7 @@ float accelMag(float ax, float ay, float az) {
 void sendRawSample(float ax, float ay, float az,
                    float gx, float gy, float gz,
                    float roll, float pitch, float yaw,
-                   int16_t mx, int16_t my, int16_t mz) {
+                   float mx, float my, float mz) {
   Serial.print(seq);
   Serial.print(",");
   Serial.print(millis());
@@ -86,11 +86,11 @@ void sendRawSample(float ax, float ay, float az,
   Serial.print(",");
   Serial.print(yaw, 2);
   Serial.print(",");
-  Serial.print(mx);
+  Serial.print(mx, 2);
   Serial.print(",");
-  Serial.print(my);
+  Serial.print(my, 2);
   Serial.print(",");
-  Serial.print(mz);
+  Serial.print(mz, 2);
   Serial.println();
 
   ++seq;
@@ -158,7 +158,13 @@ void setup() {
     }
   }
 
-  mag_ok = mag.begin();
+  mag_ok = (mag.begin() == 0);
+  if (mag_ok) {
+    mag.setOperationMode(BMM150_POWERMODE_NORMAL);
+    mag.setPresetMode(BMM150_PRESETMODE_HIGHACCURACY);
+    mag.setRate(BMM150_DATA_RATE_30HZ);
+    mag.setMeasurementXYZ();
+  }
   if (!mag_ok) {
     Serial.println("# WARN: BMM150 init failed; mag columns will stream as 0");
   }
@@ -166,7 +172,7 @@ void setup() {
   madgwick.begin(kSampleFreqHz);
 
   Serial.println("# BOOT: raw capture firmware ready - send 's' to start");
-  Serial.println("seq,t_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg,yaw_deg,mx_raw,my_raw,mz_raw");
+  Serial.println("seq,t_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,roll_deg,pitch_deg,yaw_deg,mx_uT,my_uT,mz_uT");
   Serial.println("# Commands: s=start  p=pause  m=motion sleep/wake");
 
   const uint32_t now = millis();
@@ -243,9 +249,12 @@ void loop() {
   const float pitch = madgwick.getPitch();
   const float yaw = madgwick.getYaw();
 
-  int16_t mx = 0, my = 0, mz = 0;
+  float mx = 0.0f, my = 0.0f, mz = 0.0f;
   if (mag_ok) {
-    mag.readRaw(mx, my, mz);
+    const sBmm150MagData_t magData = mag.getGeomagneticData();
+    mx = magData.xx;
+    my = magData.yy;
+    mz = magData.zz;
   }
 
   sendRawSample(ax, ay, az, gx, gy, gz, roll, pitch, yaw, mx, my, mz);
