@@ -285,8 +285,17 @@ void setup() {
 
 void loop() {
   // Handle BLE background reconnect logic
-  if (ble_ok && (!phone || !phone.connected())) {
-    tryConnect();
+  if (ble_ok) {
+    if (phone && !phone.connected()) {
+      // We had a connection, but it dropped. Reset and start scanning!
+      Serial.println("[INFO] Connection lost. Rescanning...");
+      phone.disconnect();
+      phone = BLEDevice(); // Clear the stale device
+      startScan();
+    } else if (!phone) {
+      // No phone connected, actively check scan results
+      tryConnect();
+    }
   }
 
   handleSerialCommand();
