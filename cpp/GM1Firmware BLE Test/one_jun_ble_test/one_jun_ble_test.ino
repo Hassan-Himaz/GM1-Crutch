@@ -1,10 +1,10 @@
 #include <Arduino.h>
 #include <ArduinoBLE.h>
 #include <LSM6DS3.h>
+#include <7Semi_ICM20948.h>
 #include <Wire.h>
 #include <MadgwickAHRS.h> 
-
-#include <DFRobot_BMM150.h> // <-- Replaced custom Mag header with DFRobot library
+#include "src/LoadStepDetector.h"
 
 // --- User Constants ---
 constexpr uint32_t kRecordPeriodMs   = 33; // <-- Changed to 33ms for ~30Hz
@@ -13,6 +13,7 @@ constexpr float    kMotionThresholdG = 1.05f;
 constexpr uint32_t kSleepAfterMs     = 10000;
 constexpr uint32_t kLedBlinkHalfMs   = 500;
 constexpr uint32_t kI2CFreqHz        = 100000;
+constexpr uint8_t  kIcm20948Addr     = 0x68;
 
 // --- PicoRelay Protocol Constants ---
 const char* kPicoRelayServiceUuid = "8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a01";
@@ -28,13 +29,15 @@ struct __attribute__((packed)) SensorPacket {
   float gx; float gy; float gz;
   int16_t mx; int16_t my; int16_t mz;
   float roll; float pitch; float yaw; 
+  float force_kg;
 };
-static_assert(sizeof(SensorPacket) == 42, "SensorPacket must be 42 bytes"); 
+static_assert(sizeof(SensorPacket) == 46, "SensorPacket must be 46 bytes"); 
 
 // --- Devices ---
 LSM6DS3 imu(I2C_MODE, 0x6A);
-DFRobot_BMM150_I2C mag(&Wire, I2C_ADDRESS_4); // <-- Updated to use DFRobot class
+ICM20948_7Semi mag;
 Madgwick filter; 
+LoadStepDetector load_detector;
 
 BLEDevice phone;
 BLECharacteristic dataIn;
@@ -46,7 +49,7 @@ State state = State::RECORDING;
 bool imu_ok = false;
 bool mag_ok = false;
 bool ble_ok = false;
-bool motion_enabled = true;
+bool motion_enabled = false;
 
 uint32_t last_sample_ms = 0;
 uint32_t last_motion_ms = 0;
@@ -153,13 +156,14 @@ bool sendPicoRelayMessage(BLECharacteristic& target, const uint8_t* data, size_t
 void sendSample(float ax, float ay, float az,
                 float gx, float gy, float gz,
                 int16_t mx, int16_t my, int16_t mz,
-                float roll, float pitch, float yaw) { 
+                float roll, float pitch, float yaw,
+                float force_kg) { 
                   
   // 1. Output Serial CSV
-  char line[150]; 
+  char line[170]; 
   snprintf(line, sizeof(line),
-           "%lu,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%d,%d,%d,%.2f,%.2f,%.2f",
-           seq, ax, ay, az, gx, gy, gz, mx, my, mz, roll, pitch, yaw);
+           "%lu,%.4f,%.4f,%.4f,%.2f,%.2f,%.2f,%d,%d,%d,%.2f,%.2f,%.2f,%.3f",
+           seq, ax, ay, az, gx, gy, gz, mx, my, mz, roll, pitch, yaw, force_kg);
   Serial.println(line);
 
   // 2. Output to BLE (If connected)
@@ -169,6 +173,7 @@ void sendSample(float ax, float ay, float az,
     packet.gx = gx; packet.gy = gy; packet.gz = gz;
     packet.mx = mx; packet.my = my; packet.mz = mz;
     packet.roll = roll; packet.pitch = pitch; packet.yaw = yaw;
+    packet.force_kg = force_kg;
 
     const uint8_t msgId = nextMsgId++;
     const bool sent = sendPicoRelayMessage(dataIn, 
@@ -197,6 +202,7 @@ void handleSerialCommand() {
 
   if (cmd == 's' || cmd == 'S') {
     if (state == State::PAUSED) {
+      load_detector.reset();
       state = State::RECORDING;
       last_motion_ms = millis();
       Serial.println("# RECORDING");
@@ -210,6 +216,7 @@ void handleSerialCommand() {
   } else if (cmd == 'm' || cmd == 'M') {
     motion_enabled = !motion_enabled;
     if (!motion_enabled && state == State::SLEEPING) {
+      load_detector.reset();
       state = State::RECORDING;
       last_motion_ms = millis();
       last_led_ms    = millis();
@@ -252,15 +259,20 @@ void setup() {
     imu_ok = true;
   }
 
-  // --- DFRobot Magnetometer Init Block ---
-  mag_ok = (mag.begin() == 0);
+  mag_ok = mag.begin(Wire, kIcm20948Addr);
   if (mag_ok) {
-    mag.setOperationMode(BMM150_POWERMODE_NORMAL);
-    mag.setPresetMode(BMM150_PRESETMODE_HIGHACCURACY);
-    mag.setRate(BMM150_DATA_RATE_30HZ);
-    mag.setMeasurementXYZ();
+    mag_ok = mag.applyBasicDefaults();
+  }
+  if (mag_ok) {
+    if (!mag.setSensors(false, false, false)) {
+      Serial.println("[WARN] ICM-20948 setSensors failed; continuing with mag reads");
+    }
+    const uint8_t who = mag.readWhoAmI();
+    Serial.println("[INFO] ICM-20948 ready (I2C)");
+    Serial.print("[INFO] ICM-20948 WHO_AM_I = 0x");
+    Serial.println(who, HEX);
   } else {
-    Serial.println("[WARN] BMM150 init failed; mag columns will stream as 0");
+    Serial.println("[WARN] ICM-20948 init failed; mag columns will stream as 0");
   }
   
   // Set the filter sample rate based on your recording loop interval
@@ -274,7 +286,7 @@ void setup() {
     startScan();
   }
 
-  Serial.println("seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_raw,my_raw,mz_raw,roll,pitch,yaw");
+  Serial.println("seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_uT,my_uT,mz_uT,roll,pitch,yaw,force_kg");
   Serial.println("# Commands: s=start  p=pause  m=toggle motion sleep/wake");
 
   const uint32_t now = millis();
@@ -311,6 +323,7 @@ void loop() {
   // --- SLEEPING ---
   if (state == State::SLEEPING) {
     if (!motion_enabled) {
+      load_detector.reset();
       state = State::RECORDING;
       last_motion_ms = now;
       last_led_ms    = now;
@@ -335,6 +348,7 @@ void loop() {
     }
 
     if (accelMag(ax, ay, az) >= kMotionThresholdG) {
+      load_detector.reset();
       state = State::RECORDING;
       last_motion_ms = now;
       last_led_ms    = now;
@@ -375,17 +389,20 @@ void loop() {
     yaw = filter.getYaw();
   }
 
-  // --- DFRobot Magnetometer Read Block ---
   int16_t mx = 0, my = 0, mz = 0;
+  float force_kg = 0.0f;
   if (mag_ok) {
-    const sBmm150MagData_t magData = mag.getGeomagneticData();
-    // Casting to int16_t to match the exact size requirements of your original BLE SensorPacket
-    mx = static_cast<int16_t>(magData.x);
-    my = static_cast<int16_t>(magData.y);
-    mz = static_cast<int16_t>(magData.z);
+    float mx_uT = 0.0f, my_uT = 0.0f, mz_uT = 0.0f;
+    if (mag.readMag(mx_uT, my_uT, mz_uT)) {
+      mx = static_cast<int16_t>(mx_uT);
+      my = static_cast<int16_t>(my_uT);
+      mz = static_cast<int16_t>(mz_uT);
+      const LoadStepSampleResult load_result = load_detector.process(seq, now, mz_uT);
+      force_kg = load_result.force_kg;
+    }
   }
 
-  sendSample(ax, ay, az, gx, gy, gz, mx, my, mz, roll, pitch, yaw);
+  sendSample(ax, ay, az, gx, gy, gz, mx, my, mz, roll, pitch, yaw, force_kg);
 
   if (motion_enabled) {
     if (accelMag(ax, ay, az) >= kMotionThresholdG) {
