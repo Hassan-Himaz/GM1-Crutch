@@ -1,11 +1,14 @@
 package com.example.smartcrutch
 
 import android.os.Bundle
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -14,8 +17,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,12 +30,22 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import kotlinx.coroutines.delay
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.example.smartcrutch.ui.*
@@ -48,22 +61,114 @@ class MainActivity : ComponentActivity() {
 
         enableEdgeToEdge()
         setContent {
-            SmartCrutchTheme {
-                MainAppContainer()
+            val viewModel: DashboardViewModel = viewModel()
+            val uiState by viewModel.uiState.collectAsState()
+            SmartCrutchTheme(darkTheme = uiState.isDarkMode) {
+                if (uiState.showSplash) {
+                    SplashScreen(onFinish = { viewModel.dismissSplash() })
+                } else {
+                    MainAppContainer(viewModel)
+                }
             }
         }
     }
 }
 
 @Composable
-fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
+fun SplashScreen(onFinish: () -> Unit) {
+    var startTextAnimation by remember { mutableStateOf(false) }
+    val alphaAnim = animateFloatAsState(
+        targetValue = if (startTextAnimation) 1f else 0f,
+        animationSpec = tween(durationMillis = 1000, easing = LinearEasing),
+        label = "alpha"
+    )
+
+    LaunchedEffect(Unit) {
+        delay(1000) // Quick logo glance
+        startTextAnimation = true
+        delay(2000) // Professional fade-in
+        onFinish()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F2027)), // Deep teal-navy from your logo
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Animated Icon/Logo Container
+            Box(
+                modifier = Modifier
+                    .size(180.dp)
+                    .clip(RoundedCornerShape(32.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                // If you have saved 'app_logo.png' in res/drawable, uncomment the Image below:
+                /*
+                Image(
+                    painter = painterResource(id = R.drawable.app_logo),
+                    contentDescription = "StrideQ Logo",
+                    modifier = Modifier.fillMaxSize()
+                )
+                */
+                
+                // Fallback icon that looks professional
+                Icon(
+                    imageVector = Icons.Default.AccessibilityNew,
+                    contentDescription = null,
+                    tint = AccentBlue,
+                    modifier = Modifier.size(100.dp)
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(40.dp))
+            
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.graphicsLayer(alpha = alphaAnim.value)
+            ) {
+                Text(
+                    text = "StrideQ",
+                    color = Color.White,
+                    fontSize = 56.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 4.sp,
+                    style = MaterialTheme.typography.displayLarge
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Box(
+                    modifier = Modifier
+                        .width(120.dp)
+                        .height(3.dp)
+                        .background(Color(0xFFE91E63)) // Vibrant accent line from your reference
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text(
+                    text = "Intelligent Recovery",
+                    color = AccentGreen,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MainAppContainer(viewModel: DashboardViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
     // Permission Launcher
     val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
+    ) { _ ->
         // Handle permissions
     }
 
@@ -72,6 +177,7 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
             permissionLauncher.launch(arrayOf(
                 android.Manifest.permission.BLUETOOTH_SCAN,
                 android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.BLUETOOTH_ADVERTISE,
                 android.Manifest.permission.ACCESS_FINE_LOCATION
             ))
         } else {
@@ -85,12 +191,34 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
     Scaffold(
         bottomBar = { 
             BottomNavBar(
-                currentScreen = uiState.currentScreen,
+                uiState = uiState,
                 onNavigate = { viewModel.navigateTo(it) }
             ) 
         },
-        containerColor = BackgroundNavy,
+        containerColor = MaterialTheme.colorScheme.background,
     ) { innerPadding ->
+        if (uiState.showSyncPopup) {
+            SyncMessagePopup(
+                uiState = uiState,
+                onDismiss = { viewModel.dismissSyncPopup() }
+            )
+        }
+        if (uiState.showGaitMismatchPopup) {
+            GaitMismatchPopup(
+                uiState = uiState,
+                onDismiss = { viewModel.dismissGaitMismatchPopup() }
+            )
+        }
+        if (uiState.showPrescriptionPopup) {
+            PrescriptionPopup(
+                uiState = uiState,
+                onSubmit = { crutches, gait, permanently -> 
+                    viewModel.submitPrescription(crutches, gait)
+                    viewModel.dismissPrescriptionPopup(permanently)
+                },
+                onDismiss = { viewModel.dismissPrescriptionPopup(it) }
+            )
+        }
         Box(modifier = Modifier.padding(innerPadding)) {
             when (uiState.currentScreen) {
                 Screen.Home -> HomeScreen(uiState)
@@ -99,20 +227,35 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
                     uiState = uiState, 
                     onSyncClick = { viewModel.syncData() },
                     onToggleRawStream = { enabled -> viewModel.toggleRawStream(enabled) },
-                    onToggleExperimentalDecoding = { enabled -> viewModel.toggleExperimentalDecoding(enabled) }
+                    onToggleExperimentalDecoding = { enabled -> viewModel.toggleExperimentalDecoding(enabled) },
+                    onFetchLocalData = { viewModel.fetchFromNgrok() }
                 )
-                Screen.Profile -> ProfileScreen(uiState)
-                Screen.Direct -> DirectConnectScreen(
+                Screen.Profile -> ProfileScreen(
                     uiState = uiState,
-                    onScanClick = { viewModel.startBleScan() },
-                    onConnectClick = { device: android.bluetooth.BluetoothDevice -> viewModel.connectToDevice(device, context) },
-                    onDisconnectClick = { viewModel.disconnectBle() },
-                    onStartRecording = { viewModel.startRecording(context) },
-                    onStopRecording = { viewModel.stopRecording() },
-                    onLabelChange = { gait, terrain, patient -> viewModel.setBatchLabels(gait, terrain, patient) },
-                    onMetadataChange = { age, gender, weight, leg, name -> viewModel.setPatientMetadata(age, gender, weight, leg, name) },
-                    onShareClick = { viewModel.shareLatestData(context) }
+                    onClearData = { viewModel.clearAllLocalData(context) },
+                    onToggleDeveloperMode = { viewModel.toggleDeveloperMode(it) },
+                    onUpdateGoalSteps = { viewModel.updateGoalSteps(it) },
+                    onUpdateWeightLimit = { viewModel.updateWeightLimit(it) },
+                    onUpdatePrescribedGait = { viewModel.updatePrescribedGait(it) },
+                    onUpdateDetectedGait = { viewModel.updateDetectedGait(it) },
+                    onToggleDarkMode = { viewModel.toggleDarkMode(it) }
                 )
+                Screen.Direct -> if (uiState.isDeveloperModeEnabled) {
+                    DirectConnectScreen(
+                        uiState = uiState,
+                        onPicoRelayToggle = { if (uiState.bleStatus.contains("Advertising") || uiState.isBleConnected) viewModel.stopPicoRelayMode() else viewModel.startPicoRelayMode(context) },
+                        onStartRecording = { viewModel.startRecording(context) },
+                        onStopRecording = { 
+                            viewModel.stopRecording()
+                            android.widget.Toast.makeText(context, "Session Saved. History ready to share.", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        onLabelChange = { gait, terrain, patient -> viewModel.setBatchLabels(gait, terrain, patient) },
+                        onMetadataChange = { age, gender, weight, leg, name -> viewModel.setPatientMetadata(age, gender, weight, leg, name) },
+                        onShareClick = { viewModel.shareLatestData(context) }
+                    )
+                } else {
+                    viewModel.navigateTo(Screen.Home)
+                }
             }
         }
     }
@@ -120,38 +263,79 @@ fun MainAppContainer(viewModel: DashboardViewModel = viewModel()) {
 
 @Composable
 fun HomeScreen(uiState: DashboardUiState) {
+    var showAchievementsMenu by remember { mutableStateOf(false) }
+
+    if (showAchievementsMenu) {
+        AlertDialog(
+            onDismissRequest = { showAchievementsMenu = false },
+            title = { Text("Your Achievements", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    AchievementDetailRow(
+                        title = "Consistency King",
+                        description = "Maintain your goals for an entire week.",
+                        icon = Icons.Default.CalendarMonth,
+                        color = AccentPurple
+                    )
+                    AchievementDetailRow(
+                        title = "Perfect Recovery",
+                        description = "Reach a recovery score of 100.",
+                        icon = Icons.Default.Star,
+                        color = AccentGreen
+                    )
+                    AchievementDetailRow(
+                        title = "Step Master",
+                        description = "Hit your daily step goal 3 days in a row.",
+                        icon = Icons.AutoMirrored.Filled.DirectionsRun,
+                        color = AccentBlue
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAchievementsMenu = false }) {
+                    Text("CLOSE", color = AccentBlue)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+        verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
-        item { Spacer(modifier = Modifier.height(10.dp)) }
-        item { HeaderSection(uiState.isLiveFeedActive) }
-        item { ScoreSection() }
+        item { Spacer(modifier = Modifier.height(12.dp)) }
+        item { HeaderSection(uiState.isLiveFeedActive, uiState.patientName) }
+        item { ScoreSection(uiState.recoveryScore) }
         item {
             Text(
                 text = "TODAY'S METRICS",
                 style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
-                letterSpacing = 1.sp
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                letterSpacing = 1.sp,
+                fontSize = 18.sp
             )
         }
         item { MetricsGrid(uiState) }
         
-        // New Live Server Feed Section
         item {
-            Text(
-                text = "LIVE SERVER FEED",
-                style = MaterialTheme.typography.labelLarge,
-                color = TextSecondary,
-                letterSpacing = 1.sp
-            )
+            AchievementsSection(onHeaderClick = { showAchievementsMenu = true })
         }
-        item { LiveServerFeedSection(uiState.liveLogs) }
         
-        item { AchievementsSection() }
-        item { Spacer(modifier = Modifier.height(20.dp)) }
+        // New Live Server Feed Section
+        if (uiState.isDeveloperModeEnabled) {
+            item {
+                Text(
+                    text = "LIVE SERVER FEED",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = TextSecondary,
+                    letterSpacing = 1.sp
+                )
+            }
+            item { LiveServerFeedSection(uiState.liveLogs) }
+        }
     }
 }
 
@@ -185,7 +369,7 @@ fun LiveServerFeedSection(logs: List<String>) {
 }
 
 @Composable
-fun HeaderSection(isLive: Boolean) {
+fun HeaderSection(isLive: Boolean, userName: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -194,17 +378,18 @@ fun HeaderSection(isLive: Boolean) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
-                    .size(50.dp)
+                    .size(70.dp)
                     .clip(CircleShape)
                     .background(AccentBlue.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Person, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(30.dp))
+                Icon(Icons.Default.Person, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(45.dp))
             }
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(16.dp))
             Column {
-                Text("Good morning,", color = TextSecondary, fontSize = 14.sp)
-                Text("Alex", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Good morning,", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 22.sp)
+                val firstName = userName.split(" ").firstOrNull() ?: userName
+                Text(firstName, color = MaterialTheme.colorScheme.onSurface, fontSize = 36.sp, fontWeight = FontWeight.Black)
             }
         }
         
@@ -235,9 +420,9 @@ fun HeaderSection(isLive: Boolean) {
 }
 
 @Composable
-fun ScoreSection() {
+fun ScoreSection(score: Int) {
     Surface(
-        color = SurfaceNavy,
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(16.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -247,13 +432,13 @@ fun ScoreSection() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("Today's score", color = TextSecondary, fontSize = 14.sp)
+                Text("Today's score", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 20.sp)
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text("87", color = AccentGreen, fontSize = 36.sp, fontWeight = FontWeight.Bold)
-                    Text("/ 100", color = TextSecondary, fontSize = 18.sp, modifier = Modifier.padding(bottom = 6.dp))
+                    Text(score.toString(), color = AccentGreen, fontSize = 56.sp, fontWeight = FontWeight.Bold)
+                    Text("/ 100", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 24.sp, modifier = Modifier.padding(bottom = 8.dp))
                 }
             }
-            Icon(Icons.Default.EmojiEvents, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(40.dp))
+            Icon(Icons.Default.EmojiEvents, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(50.dp))
         }
     }
 }
@@ -277,8 +462,8 @@ fun MetricsGrid(uiState: DashboardUiState) {
                             trackColor = Color.White.copy(alpha = 0.1f)
                         )
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("${(uiState.weightBearing * 100).toInt()}%", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Text("of limit", color = TextSecondary, fontSize = 10.sp)
+                            Text("${(uiState.weightBearing * 100).toInt()}%", color = MaterialTheme.colorScheme.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                            Text("of limit", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                         }
                     }
                 },
@@ -290,8 +475,8 @@ fun MetricsGrid(uiState: DashboardUiState) {
                 accentColor = AccentPurple,
                 content = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(String.format(java.util.Locale.US, "%,d", uiState.steps), color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                        Text("/ ${uiState.goalSteps} steps", color = TextSecondary, fontSize = 12.sp)
+                        Text(String.format(java.util.Locale.US, "%,d", uiState.steps), color = MaterialTheme.colorScheme.onSurface, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                        Text("/ ${uiState.goalSteps} steps", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                     }
                 },
                 footer = "${(uiState.steps * 100 / uiState.goalSteps)}% of daily goal"
@@ -303,99 +488,46 @@ fun MetricsGrid(uiState: DashboardUiState) {
                 modifier = Modifier.weight(1f),
                 accentColor = AccentBlue,
                 content = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        GaitChip("Prescribed", "3-Point", AccentBlue)
-                        GaitChip("Detected", uiState.gaitPattern, AccentGreen)
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        GaitChip("Goal", uiState.selectedGait.ifEmpty { "Swing" }, AccentBlue)
+                        GaitChip("Live", uiState.gaitPattern, AccentGreen)
                     }
                 },
-                footer = "Matches prescription"
-            )
-            val smartTitle = when(uiState.lastReceivedType) {
-                "GM1" -> "IMU + Magnetometer"
-                "SENSOR" -> "Ambient Status"
-                "DIRECT" -> "Direct BLE (GM1)"
-                else -> "Data Stream"
-            }
-            MetricCard(
-                title = smartTitle,
-                modifier = Modifier.weight(1f),
-                accentColor = AccentOrange,
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                        when (uiState.lastReceivedType) {
-                            "GM1" -> {
-                                val data = uiState.latestGm1Data ?: emptyMap()
-                                Text(
-                                    text = String.format(java.util.Locale.US, "A: %.4f, %.4f, %.4f", data["ax_g"], data["ay_g"], data["az_g"]),
-                                    color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = String.format(java.util.Locale.US, "G: %.2f, %.2f, %.2f", data["gx_dps"], data["gy_dps"], data["gz_dps"]),
-                                    color = TextPrimary, fontSize = 11.sp
-                                )
-                                Text(
-                                    text = String.format(java.util.Locale.US, "M: %d, %d, %d", data["mx_raw"], data["my_raw"], data["mz_raw"]),
-                                    color = AccentOrange, fontSize = 11.sp, fontWeight = FontWeight.Medium
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Seq: ${data["seq"]} | 10 pts",
-                                    color = TextSecondary, fontSize = 9.sp
-                                )
-                            }
-                            "DIRECT" -> {
-                                val data = uiState.directImuData
-                                Text(
-                                    text = String.format(java.util.Locale.US, "A: %.4f, %.4f, %.4f", data["ax"], data["ay"], data["az"]),
-                                    color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = String.format(java.util.Locale.US, "G: %.2f, %.2f, %.2f", data["gx"], data["gy"], data["gz"]),
-                                    color = TextPrimary, fontSize = 11.sp
-                                )
-                                Text(
-                                    text = String.format(java.util.Locale.US, "M: %d, %d, %d", data["mx"]?.toInt() ?: 0, data["my"]?.toInt() ?: 0, data["mz"]?.toInt() ?: 0),
-                                    color = AccentOrange, fontSize = 11.sp
-                                )
-                            }
-                            "SENSOR" -> {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Thermostat, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(16.dp))
-                                    Text(String.format(java.util.Locale.US, "%.1f°C", uiState.temperature), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.WaterDrop, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(16.dp))
-                                    Text(String.format(java.util.Locale.US, "%.1f%% Hum", uiState.humidity), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                                }
-                            }
-                            else -> {
-                                if (uiState.latestNumbers.isEmpty()) {
-                                    Text("Waiting for data...", color = TextSecondary, fontSize = 12.sp)
-                                } else {
-                                    Text(
-                                        text = uiState.latestNumbers.joinToString(", "),
-                                        color = TextPrimary,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        textAlign = TextAlign.Center,
-                                        lineHeight = 16.sp
-                                    )
-                                    Text(
-                                        text = "${uiState.latestNumbers.size} values total",
-                                        color = TextSecondary,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
+                footer = when {
+                    uiState.gaitPattern == "Not Detected" -> "Awaiting data"
+                    uiState.selectedGait.equals(uiState.gaitPattern, ignoreCase = true) -> "Matches prescription"
+                    else -> "Does not match prescription"
                 },
-                footer = when(uiState.lastReceivedType) {
-                    "GM1" -> "Full 9-Axis + Seq"
-                    "SENSOR" -> "Environmental"
-                    else -> "Numbers extracted"
+                footerColor = when {
+                    uiState.gaitPattern == "Not Detected" -> MaterialTheme.colorScheme.onSurfaceVariant
+                    uiState.selectedGait.equals(uiState.gaitPattern, ignoreCase = true) -> AccentGreen
+                    else -> Color.Red
                 }
+            )
+            MetricCard(
+                title = "Wrist Strain",
+                modifier = Modifier.weight(1f),
+                accentColor = if (uiState.wristStrainIndex > 10) Color.Red else AccentGreen,
+                content = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = uiState.wristStrainIndex.toString(),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 42.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                        Text(
+                            text = if (uiState.wristStrainIndex > 10) "HIGH" else "LOW",
+                            color = if (uiState.wristStrainIndex > 10) Color.Red else AccentGreen,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                },
+                footer = if (uiState.wristStrainIndex > 10) "Take a break" else "Safe to continue"
             )
         }
     }
@@ -407,10 +539,11 @@ fun MetricCard(
     accentColor: Color,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
-    footer: String
+    footer: String,
+    footerColor: Color = AccentGreen
 ) {
     Surface(
-        color = SurfaceNavy,
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(16.dp),
         modifier = modifier
     ) {
@@ -418,7 +551,7 @@ fun MetricCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(accentColor))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(title, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
             Spacer(modifier = Modifier.height(16.dp))
             Box(modifier = Modifier.fillMaxWidth().height(100.dp), contentAlignment = Alignment.Center) {
@@ -427,8 +560,9 @@ fun MetricCard(
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = footer,
-                color = AccentGreen,
-                fontSize = 10.sp,
+                color = footerColor,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
         }
@@ -437,58 +571,89 @@ fun MetricCard(
 
 @Composable
 fun GaitChip(label: String, value: String, color: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, color = TextSecondary, fontSize = 8.sp)
-        Spacer(modifier = Modifier.height(4.dp))
-        Surface(
-            color = color.copy(alpha = 0.1f),
-            shape = RoundedCornerShape(8.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.3f))
+    Surface(
+        color = color.copy(alpha = 0.08f),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.2f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            Text(
+                text = label.uppercase(),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.5.sp
+            )
             Text(
                 text = value,
                 color = color,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold
             )
         }
     }
 }
 
 @Composable
-fun AchievementsSection() {
+fun AchievementsSection(onHeaderClick: () -> Unit) {
     Column {
-        Text("ACHIEVEMENTS UNLOCKED", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { onHeaderClick() },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("ACHIEVEMENTS UNLOCKED", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp))
+        }
         Spacer(modifier = Modifier.height(12.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             items(5) { index ->
-                val color = when(index) {
-                    0 -> AccentGreen
-                    1 -> AccentBlue
-                    2 -> AccentOrange
-                    else -> Color.Gray.copy(alpha = 0.3f)
-                }
                 Box(
                     modifier = Modifier
-                        .size(45.dp)
+                        .size(60.dp)
                         .clip(CircleShape)
-                        .background(color.copy(alpha = 0.15f)),
+                        .background(AccentPurple.copy(alpha = 0.1f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         when(index) {
                             0 -> Icons.AutoMirrored.Filled.DirectionsWalk
                             1 -> Icons.Default.Timer
-                            2 -> Icons.Default.LocalFireDepartment
-                            else -> Icons.Default.Lock
+                            2 -> Icons.Default.Whatshot
+                            3 -> Icons.Default.MilitaryTech
+                            else -> Icons.Default.EmojiEvents
                         },
                         contentDescription = null,
-                        tint = color,
-                        modifier = Modifier.size(24.dp)
+                        tint = AccentPurple,
+                        modifier = Modifier.size(30.dp)
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun AchievementDetailRow(title: String, description: String, icon: ImageVector, color: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, null, tint = color, modifier = Modifier.size(24.dp))
+        }
+        Spacer(modifier = Modifier.width(16.dp))
+        Column {
+            Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(description, color = TextSecondary, fontSize = 12.sp)
         }
     }
 }
@@ -498,7 +663,8 @@ fun SyncScreen(
     uiState: DashboardUiState, 
     onSyncClick: () -> Unit,
     onToggleRawStream: (Boolean) -> Unit,
-    onToggleExperimentalDecoding: (Boolean) -> Unit
+    onToggleExperimentalDecoding: (Boolean) -> Unit,
+    onFetchLocalData: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -515,69 +681,124 @@ fun SyncScreen(
             modifier = Modifier.size(80.dp)
         )
         Spacer(modifier = Modifier.height(24.dp))
-        Text("Data Synchronization", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("Data Synchronization", color = MaterialTheme.colorScheme.onSurface, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(40.dp))
         
-        Surface(
-            color = SurfaceNavy,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                SyncInfoRow("Status", uiState.syncStatus, if (uiState.syncStatus == "Connected") AccentGreen else TextSecondary)
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
-                SyncInfoRow("Last Synced", uiState.lastSyncTime, TextPrimary)
+        if (uiState.isDeveloperModeEnabled) {
+            Text(
+                text = "LOCAL DEVELOPMENT",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.Start).padding(start = 8.dp),
+                fontSize = 18.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Button(
+                        onClick = onFetchLocalData,
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Receive Data from Local App", fontWeight = FontWeight.Bold)
+                    }
+                    if (uiState.lastNgrokData.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = uiState.lastNgrokData,
+                            color = AccentGreen,
+                            fontSize = 12.sp,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             }
+            Spacer(modifier = Modifier.height(24.dp))
         }
-        
-        Spacer(modifier = Modifier.height(24.dp))
 
-        Text(
-            text = "DEBUG SETTINGS",
-            style = MaterialTheme.typography.labelLarge,
-            color = TextSecondary,
-            modifier = Modifier.align(Alignment.Start).padding(start = 8.dp)
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        
-        Surface(
-            color = SurfaceNavy,
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                SettingsToggleRow(
-                    label = "Raw Data Stream",
-                    description = "View unparsed byte sequences",
-                    isEnabled = uiState.isRawStreamEnabled,
-                    onToggle = onToggleRawStream
-                )
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
-                SettingsToggleRow(
-                    label = "Experimental Binary",
-                    description = "Decode <Hffffffhhh format",
-                    isEnabled = uiState.isExperimentalDecodingEnabled,
-                    onToggle = onToggleExperimentalDecoding
-                )
+        if (uiState.isDeveloperModeEnabled) {
+            Text(
+                text = "CAMGENIUM HARVESTER",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.Start).padding(start = 8.dp),
+                fontSize = 18.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SyncInfoRow("Status", uiState.syncStatus, if (uiState.syncStatus == "Connected") AccentGreen else MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                    SyncInfoRow("Last Synced", uiState.lastSyncTime, MaterialTheme.colorScheme.onSurface)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "DEBUG SETTINGS",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.Start).padding(start = 8.dp),
+                fontSize = 18.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SettingsToggleRow(
+                        label = "Raw Data Stream",
+                        description = "View unparsed byte sequences",
+                        isEnabled = uiState.isRawStreamEnabled,
+                        onToggle = onToggleRawStream
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                    SettingsToggleRow(
+                        label = "Experimental Binary",
+                        description = "Decode <Hffffffhhh format",
+                        isEnabled = uiState.isExperimentalDecodingEnabled,
+                        onToggle = onToggleExperimentalDecoding
+                    )
+                }
+            }
+        } else {
+            // If dev mode is off, maybe show a simple message or nothing
+            Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                Text("Standard Mode: Automatic background sync enabled.", color = TextSecondary, textAlign = TextAlign.Center)
             }
         }
         
         Spacer(modifier = Modifier.weight(1f))
         
-        Button(
-            onClick = onSyncClick,
-            enabled = !uiState.isSyncing,
-            colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(56.dp)
-        ) {
-            if (uiState.isSyncing) {
-                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-            } else {
-                Text("Sync Now", fontWeight = FontWeight.Bold)
+        if (uiState.isDeveloperModeEnabled) {
+            Button(
+                onClick = onSyncClick,
+                enabled = !uiState.isSyncing,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                if (uiState.isSyncing) {
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+                } else {
+                    Text("Sync Now (Camgenium)", fontWeight = FontWeight.Bold)
+                }
             }
+            Spacer(modifier = Modifier.height(20.dp))
         }
-        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -589,8 +810,8 @@ fun SettingsToggleRow(label: String, description: String, isEnabled: Boolean, on
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(label, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text(description, color = TextSecondary, fontSize = 12.sp)
+            Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
         }
         Switch(
             checked = isEnabled,
@@ -598,8 +819,8 @@ fun SettingsToggleRow(label: String, description: String, isEnabled: Boolean, on
             colors = SwitchDefaults.colors(
                 checkedThumbColor = AccentGreen,
                 checkedTrackColor = AccentGreen.copy(alpha = 0.3f),
-                uncheckedThumbColor = TextSecondary,
-                uncheckedTrackColor = SurfaceNavy
+                uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                uncheckedTrackColor = MaterialTheme.colorScheme.surface
             )
         )
     }
@@ -608,8 +829,8 @@ fun SettingsToggleRow(label: String, description: String, isEnabled: Boolean, on
 @Composable
 fun SyncInfoRow(label: String, value: String, valueColor: Color) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = TextSecondary, fontSize = 14.sp)
-        Text(value, color = valueColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+        Text(value, color = valueColor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -626,28 +847,28 @@ fun ProgressScreen(uiState: DashboardUiState) {
         item {
             Text(
                 "RECOVERY PROGRESS",
-                color = TextPrimary,
-                fontSize = 24.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontSize = 32.sp,
                 fontWeight = FontWeight.Bold
             )
             Text(
                 "Historical weight bearing trends",
-                color = TextSecondary,
-                fontSize = 14.sp
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 18.sp
             )
         }
 
         item {
             Surface(
-                color = SurfaceNavy,
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
                         "Weight Bearing Trend",
-                        color = TextPrimary,
-                        fontSize = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 22.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(24.dp))
@@ -673,7 +894,7 @@ fun ProgressScreen(uiState: DashboardUiState) {
         }
 
         item {
-            MetricAnalysisSection(uiState)
+            MetricAnalysisSection()
         }
 
         item { Spacer(modifier = Modifier.height(20.dp)) }
@@ -682,6 +903,7 @@ fun ProgressScreen(uiState: DashboardUiState) {
 
 @Composable
 fun WeightBearingChart(data: List<Float>, modifier: Modifier = Modifier) {
+    val bgColor = MaterialTheme.colorScheme.background
     Canvas(modifier = modifier) {
         if (data.size < 2) return@Canvas
 
@@ -739,7 +961,7 @@ fun WeightBearingChart(data: List<Float>, modifier: Modifier = Modifier) {
                 center = androidx.compose.ui.geometry.Offset(x, y)
             )
             drawCircle(
-                color = BackgroundNavy,
+                color = bgColor,
                 radius = 2.dp.toPx(),
                 center = androidx.compose.ui.geometry.Offset(x, y)
             )
@@ -750,45 +972,56 @@ fun WeightBearingChart(data: List<Float>, modifier: Modifier = Modifier) {
 @Composable
 fun ChartLegendItem(label: String, color: Color) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(modifier = Modifier.size(12.dp).clip(RoundedCornerShape(2.dp)).background(color))
+        Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(color))
         Spacer(modifier = Modifier.width(8.dp))
         Text(label, color = TextSecondary, fontSize = 12.sp)
     }
 }
 
 @Composable
-fun MetricAnalysisSection(uiState: DashboardUiState) {
-    Surface(
-        color = SurfaceNavy,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text("Weekly Insights", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            val improvement = if (uiState.steps > 3000) "15%" else "8%"
-            InsightRow(
-                icon = Icons.AutoMirrored.Filled.TrendingUp,
-                title = "Weight Consistency",
-                description = "Your weight bearing has improved by $improvement this week.",
-                color = AccentGreen
-            )
-            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
-            InsightRow(
-                icon = Icons.Default.Warning,
-                title = "Gait Deviation",
-                description = "Detected slight tilt in ${uiState.gaitPattern} steps. Keep crutch vertical.",
-                color = AccentOrange
-            )
+fun MetricAnalysisSection() {
+    Column {
+        Text("METRIC ANALYSIS", style = MaterialTheme.typography.labelLarge, color = TextSecondary, letterSpacing = 1.sp)
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        Surface(
+            color = SurfaceNavy,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("Weekly Insights", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                
+                InsightRow(
+                    icon = Icons.AutoMirrored.Filled.TrendingUp,
+                    title = "Weight Bearing",
+                    description = "Increasing stability",
+                    color = AccentGreen
+                )
+                
+                InsightRow(
+                    icon = Icons.AutoMirrored.Filled.DirectionsWalk,
+                    title = "Step Quality",
+                    description = "Consistent cadence",
+                    color = AccentBlue
+                )
+            }
         }
     }
 }
 
 @Composable
 fun InsightRow(icon: ImageVector, title: String, description: String, color: Color) {
-    Row(verticalAlignment = Alignment.Top) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(color.copy(alpha = 0.1f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp))
+        }
         Spacer(modifier = Modifier.width(16.dp))
         Column {
             Text(title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
@@ -798,7 +1031,142 @@ fun InsightRow(icon: ImageVector, title: String, description: String, color: Col
 }
 
 @Composable
-fun ProfileScreen(uiState: DashboardUiState) {
+fun ProfileScreen(
+    uiState: DashboardUiState, 
+    onClearData: () -> Unit,
+    onToggleDeveloperMode: (Boolean) -> Unit,
+    onUpdateGoalSteps: (Int) -> Unit,
+    onUpdateWeightLimit: (Float) -> Unit,
+    onUpdatePrescribedGait: (String) -> Unit,
+    onUpdateDetectedGait: (String) -> Unit,
+    onToggleDarkMode: (Boolean) -> Unit
+) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showEditSteps by remember { mutableStateOf(false) }
+    var showEditWeight by remember { mutableStateOf(false) }
+    var showEditGait by remember { mutableStateOf(false) }
+    var showEditDetectedGait by remember { mutableStateOf(false) }
+
+    // Dialog for Steps
+    if (showEditSteps) {
+        var tempSteps by remember { mutableStateOf(uiState.goalSteps.toString()) }
+        AlertDialog(
+            onDismissRequest = { showEditSteps = false },
+            title = { Text("Edit Step Goal", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = tempSteps,
+                    onValueChange = { tempSteps = it },
+                    label = { Text("Steps") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    tempSteps.toIntOrNull()?.let { onUpdateGoalSteps(it) }
+                    showEditSteps = false
+                }) { Text("SAVE", color = AccentGreen) }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
+    // Dialog for Weight
+    if (showEditWeight) {
+        var tempWeight by remember { mutableStateOf(uiState.weightLimit.toString()) }
+        AlertDialog(
+            onDismissRequest = { showEditWeight = false },
+            title = { Text("Edit Weight Limit", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = tempWeight,
+                    onValueChange = { tempWeight = it },
+                    label = { Text("Limit (kg)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    tempWeight.toFloatOrNull()?.let { onUpdateWeightLimit(it) }
+                    showEditWeight = false
+                }) { Text("SAVE", color = AccentGreen) }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
+    // Dialog for Gait
+    if (showEditGait) {
+        var tempGait by remember { mutableStateOf(uiState.selectedGait) }
+        AlertDialog(
+            onDismissRequest = { showEditGait = false },
+            title = { Text("Edit Prescribed Gait", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = tempGait,
+                    onValueChange = { tempGait = it },
+                    label = { Text("Gait Type") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onUpdatePrescribedGait(tempGait)
+                    showEditGait = false
+                }) { Text("SAVE", color = AccentGreen) }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
+    // Dialog for Detected Gait
+    if (showEditDetectedGait) {
+        var tempGait by remember { mutableStateOf(uiState.gaitPattern) }
+        AlertDialog(
+            onDismissRequest = { showEditDetectedGait = false },
+            title = { Text("Edit Detected Gait (Demo)", color = Color.White) },
+            text = {
+                OutlinedTextField(
+                    value = tempGait,
+                    onValueChange = { tempGait = it },
+                    label = { Text("Live Gait") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onUpdateDetectedGait(tempGait)
+                    showEditDetectedGait = false
+                }) { Text("SAVE", color = AccentGreen) }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete All Local Data?", color = Color.White) },
+            text = { Text("This will permanently remove all stored sensor history for all patients on this device.", color = TextSecondary) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onClearData()
+                        showDeleteConfirm = false
+                    }
+                ) {
+                    Text("DELETE ALL", color = Color.Red, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("CANCEL", color = TextPrimary)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
@@ -809,44 +1177,72 @@ fun ProfileScreen(uiState: DashboardUiState) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(80.dp)
+                        .size(100.dp)
                         .clip(CircleShape)
                         .background(AccentOrange.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Person, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(50.dp))
+                    Icon(Icons.Default.Person, contentDescription = null, tint = AccentOrange, modifier = Modifier.size(60.dp))
                 }
-                Spacer(modifier = Modifier.width(20.dp))
+                Spacer(modifier = Modifier.width(24.dp))
                 Column {
-                    Text("Alex Johnson", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    Text("Patient ID: CR-99021", color = TextSecondary, fontSize = 14.sp)
+                    Text(uiState.patientName, color = MaterialTheme.colorScheme.onSurface, fontSize = 32.sp, fontWeight = FontWeight.Black)
+                    Text("Patient ID: CR-99021", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
                 }
             }
         }
 
         item {
-            Text("RECOVERY GOALS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+            Text("RECOVERY GOALS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
             Spacer(modifier = Modifier.height(12.dp))
             Surface(
-                color = SurfaceNavy,
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    GoalEditRow("Daily Step Goal", "${uiState.goalSteps} steps", AccentPurple)
+                    GoalEditRow("Daily Step Goal", "${uiState.goalSteps} steps", AccentPurple, onEditClick = { showEditSteps = true })
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
-                    GoalEditRow("Weight Limit", "${uiState.weightLimit} kg", AccentGreen)
+                    GoalEditRow("Weight Limit", "${uiState.weightLimit} kg", AccentGreen, onEditClick = { showEditWeight = true })
                     HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
-                    GoalEditRow("Prescribed Gait", uiState.gaitPattern, AccentBlue)
+                    GoalEditRow("Prescribed Gait", uiState.selectedGait.ifEmpty { "Swing" }, AccentBlue, onEditClick = { showEditGait = true })
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                    GoalEditRow("Detected Gait (Demo)", uiState.gaitPattern, AccentGreen, onEditClick = { showEditDetectedGait = true })
                 }
             }
         }
 
         item {
-            Text("HEALTHCARE PROVIDER", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+            Text("SYSTEM SETTINGS", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
             Spacer(modifier = Modifier.height(12.dp))
             Surface(
-                color = SurfaceNavy,
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    SettingsToggleRow(
+                        label = "Developer Mode",
+                        description = "Enable advanced diagnostics and connectivity",
+                        isEnabled = uiState.isDeveloperModeEnabled,
+                        onToggle = onToggleDeveloperMode
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = Color.White.copy(alpha = 0.05f))
+                    SettingsToggleRow(
+                        label = "Dark Mode",
+                        description = "Switch between light and dark themes",
+                        isEnabled = uiState.isDarkMode,
+                        onToggle = onToggleDarkMode
+                    )
+                }
+            }
+        }
+
+        item {
+            Text("HEALTHCARE PROVIDER", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 18.sp)
+            Spacer(modifier = Modifier.height(12.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -855,28 +1251,41 @@ fun ProfileScreen(uiState: DashboardUiState) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
-                        modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(AccentBlue.copy(alpha = 0.1f)),
+                        modifier = Modifier.size(50.dp).clip(RoundedCornerShape(8.dp)).background(AccentBlue.copy(alpha = 0.1f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Default.LocalHospital, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.LocalHospital, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(32.dp))
                     }
                     Spacer(modifier = Modifier.width(16.dp))
                     Column {
-                        Text(uiState.organizationName, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text("Dr. Sarah Smith • Orthopedic Dept.", color = TextSecondary, fontSize = 12.sp)
+                        Text(uiState.organizationName, color = MaterialTheme.colorScheme.onSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("Dr. Sarah Smith • Orthopedic Dept.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                     }
                 }
             }
         }
 
         item {
-            Button(
-                onClick = { /* Logout or similar */ },
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.1f)),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().height(56.dp)
-            ) {
-                Text("Log Out", color = Color.Red, fontWeight = FontWeight.Bold)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = { /* Logout or similar */ },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.05f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) {
+                    Text("Log Out", color = TextSecondary, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = { showDeleteConfirm = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.1f)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
+                ) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = Color.Red)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear All Local Data", color = Color.Red, fontWeight = FontWeight.Bold)
+                }
             }
         }
 
@@ -885,27 +1294,28 @@ fun ProfileScreen(uiState: DashboardUiState) {
 }
 
 @Composable
-fun GoalEditRow(label: String, value: String, color: Color) {
+fun GoalEditRow(label: String, value: String, color: Color, onEditClick: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column {
-            Text(label, color = TextSecondary, fontSize = 12.sp)
-            Text(value, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+            Text(value, color = MaterialTheme.colorScheme.onSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
-        IconButton(onClick = { /* Edit */ }) {
-            Icon(Icons.Default.Edit, contentDescription = null, tint = color.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
+        IconButton(onClick = onEditClick) {
+            Icon(Icons.Default.Edit, contentDescription = null, tint = color.copy(alpha = 0.6f), modifier = Modifier.size(24.dp))
         }
     }
 }
 
 @Composable
-fun BottomNavBar(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
+fun BottomNavBar(uiState: DashboardUiState, onNavigate: (Screen) -> Unit) {
+    val currentScreen = uiState.currentScreen
     NavigationBar(
-        containerColor = SurfaceNavy,
-        contentColor = TextSecondary,
+        containerColor = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation = 8.dp
     ) {
         NavigationBarItem(
@@ -930,17 +1340,19 @@ fun BottomNavBar(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
                 indicatorColor = AccentPurple.copy(alpha = 0.1f)
             )
         )
-        NavigationBarItem(
-            icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
-            label = { Text("Direct") },
-            selected = currentScreen == Screen.Direct,
-            onClick = { onNavigate(Screen.Direct) },
-            colors = NavigationBarItemDefaults.colors(
-                selectedIconColor = AccentBlue,
-                selectedTextColor = AccentBlue,
-                indicatorColor = AccentBlue.copy(alpha = 0.1f)
+        if (uiState.isDeveloperModeEnabled) {
+            NavigationBarItem(
+                icon = { Icon(Icons.Default.Bluetooth, contentDescription = null) },
+                label = { Text("Direct") },
+                selected = currentScreen == Screen.Direct,
+                onClick = { onNavigate(Screen.Direct) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = AccentBlue,
+                    selectedTextColor = AccentBlue,
+                    indicatorColor = AccentBlue.copy(alpha = 0.1f)
+                )
             )
-        )
+        }
         NavigationBarItem(
             icon = { Icon(Icons.Default.Sync, contentDescription = null) },
             label = { Text("Sync") },
@@ -970,7 +1382,7 @@ fun BottomNavBar(currentScreen: Screen, onNavigate: (Screen) -> Unit) {
 @Composable
 fun LiveFeedPreview() {
     SmartCrutchTheme {
-        Box(modifier = Modifier.background(BackgroundNavy).padding(16.dp)) {
+        Box(modifier = Modifier.background(MaterialTheme.colorScheme.background).padding(16.dp)) {
             LiveServerFeedSection(listOf("[14:20:01] Connected to server.", "[14:20:05] Received data: 45kg pressure"))
         }
     }
@@ -979,16 +1391,13 @@ fun LiveFeedPreview() {
 @Composable
 fun DirectConnectScreen(
     uiState: DashboardUiState,
-    onScanClick: () -> Unit,
-    onConnectClick: (android.bluetooth.BluetoothDevice) -> Unit,
-    onDisconnectClick: () -> Unit,
+    onPicoRelayToggle: () -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onLabelChange: (String, String, String) -> Unit,
     onMetadataChange: (String, String, String, String, String) -> Unit,
     onShareClick: () -> Unit
 ) {
-    val context = LocalContext.current
     var gaitText by remember { mutableStateOf(uiState.batchGait) }
     var terrainText by remember { mutableStateOf(uiState.batchTerrain) }
     var patientIdText by remember { mutableStateOf(uiState.patientId) }
@@ -1008,25 +1417,19 @@ fun DirectConnectScreen(
         item { Spacer(modifier = Modifier.height(10.dp)) }
         item {
             Text(
-                "DIRECT CONNECTION",
+                "PICO RELAY CONNECTION",
                 color = TextPrimary,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "Connect directly to GM1-Node via BLE",
+                "The app acts as a Peripheral for the Nano Central.",
                 color = TextSecondary,
                 fontSize = 14.sp
             )
             Text(
-                "Note: Location must be ON in system settings.",
+                "1. Start Pico Relay Mode. 2. Nano will find and connect to this phone.",
                 color = AccentOrange.copy(alpha = 0.7f),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "If device not found: Ensure other Hub/Bridge apps are DISCONNECTED.",
-                color = Color.Red.copy(alpha = 0.7f),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -1035,7 +1438,7 @@ fun DirectConnectScreen(
         // Status Card
         item {
             Surface(
-                color = SurfaceNavy,
+                color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -1048,60 +1451,114 @@ fun DirectConnectScreen(
                         Text("Connection Status", color = TextSecondary, fontSize = 12.sp)
                         Text(
                             uiState.bleStatus,
-                            color = if (uiState.isBleConnected) AccentGreen else TextPrimary,
+                            color = if (uiState.isBleConnected) AccentGreen else if (uiState.bleStatus.contains("Advertising")) AccentOrange else TextPrimary,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Icon(
-                        if (uiState.isBleConnected) Icons.Default.Bluetooth else Icons.Default.BluetoothDisabled,
+                        if (uiState.isBleConnected) Icons.Default.BluetoothConnected else if (uiState.bleStatus.contains("Advertising")) Icons.Default.BroadcastOnHome else Icons.Default.BluetoothDisabled,
                         contentDescription = null,
-                        tint = if (uiState.isBleConnected) AccentGreen else AccentBlue,
+                        tint = if (uiState.isBleConnected) AccentGreen else if (uiState.bleStatus.contains("Advertising")) AccentOrange else AccentBlue,
                         modifier = Modifier.size(32.dp)
                     )
                 }
             }
         }
 
-        if (uiState.isBleConnected) {
-            // Metadata Section
+        // Database Export Section (Always accessible)
+        if (uiState.patientId.isNotBlank() && !uiState.isRecording) {
             item {
-                Surface(
-                    color = SurfaceNavy,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
+                Button(
+                    onClick = onShareClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp)
                 ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("PATIENT METADATA", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        OutlinedTextField(
-                            value = patientIdText,
-                            onValueChange = { 
-                                patientIdText = it
-                                onMetadataChange(ageText, genderText, weightText, legText, nameText)
-                                onLabelChange(gaitText, terrainText, it)
-                            },
-                            label = { Text("Associated Patient ID", fontSize = 10.sp) },
-                            modifier = Modifier.fillMaxWidth(),
-                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
-                            singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AccentGreen,
-                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                            )
-                        )
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
+                    Icon(Icons.Default.Email, null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Share Patient History (DB)", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
 
+        // Pico Relay Toggle
+        item {
+            val isBroadcasting = uiState.bleStatus.contains("Advertising") || uiState.isBleConnected
+            Button(
+                onClick = onPicoRelayToggle,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isBroadcasting) Color.Red.copy(alpha = 0.6f) else AccentBlue
+                ),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(if (isBroadcasting) Icons.Default.Stop else Icons.Default.SettingsInputAntenna, contentDescription = null)
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(if (isBroadcasting) "Stop Pico Relay Mode" else "Start Pico Relay Mode")
+            }
+        }
+
+        // Metadata Section
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("PATIENT METADATA", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                    if (!uiState.isBleConnected) {
+                        Text("Not Connected (Simulated UI)", color = Color.Red.copy(alpha = 0.5f), fontSize = 10.sp)
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    OutlinedTextField(
+                        value = patientIdText,
+                        onValueChange = { 
+                            patientIdText = it
+                            onMetadataChange(ageText, genderText, weightText, legText, nameText)
+                            onLabelChange(gaitText, terrainText, it)
+                        },
+                        label = { Text("Associated Patient ID", fontSize = 10.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentGreen,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        )
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = nameText,
+                        onValueChange = { 
+                            nameText = it
+                            onMetadataChange(ageText, genderText, weightText, legText, it)
+                        },
+                        label = { Text("Patient Name (Optional)", fontSize = 10.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentBlue,
+                            unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                        )
+                    )
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
-                            value = nameText,
+                            value = ageText,
                             onValueChange = { 
-                                nameText = it
-                                onMetadataChange(ageText, genderText, weightText, legText, it)
+                                ageText = it
+                                onMetadataChange(it, genderText, weightText, legText, nameText)
                             },
-                            label = { Text("Patient Name (Optional)", fontSize = 10.sp) },
-                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Age", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
                             textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -1109,248 +1566,175 @@ fun DirectConnectScreen(
                                 unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
                             )
                         )
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = ageText,
-                                onValueChange = { 
-                                    ageText = it
-                                    onMetadataChange(it, genderText, weightText, legText, nameText)
-                                },
-                                label = { Text("Age", fontSize = 10.sp) },
-                                modifier = Modifier.weight(1f),
-                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = AccentBlue,
-                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                                )
-                            )
-                            DropdownSelector(
-                                label = "Gender",
-                                options = listOf("Male", "Female", "Other", "Prefer not to say"),
-                                selectedOption = genderText,
-                                onOptionSelected = {
-                                    genderText = it
-                                    onMetadataChange(ageText, it, weightText, legText, nameText)
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = weightText,
-                                onValueChange = { 
-                                    weightText = it
-                                    onMetadataChange(ageText, genderText, it, legText, nameText)
-                                },
-                                label = { Text("Weight (kg)", fontSize = 10.sp) },
-                                modifier = Modifier.weight(1f),
-                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = AccentGreen,
-                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                                )
-                            )
-                            DropdownSelector(
-                                label = "Injured Leg",
-                                options = listOf("Left", "Right", "Both", "None"),
-                                selectedOption = legText,
-                                onOptionSelected = {
-                                    legText = it
-                                    onMetadataChange(ageText, genderText, weightText, it, nameText)
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Labeling Section
-            item {
-                Surface(
-                    color = SurfaceNavy,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text("BATCH LABELS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = gaitText,
-                                onValueChange = { 
-                                    gaitText = it
-                                    onLabelChange(it, terrainText, patientIdText)
-                                },
-                                label = { Text("Gait Type", fontSize = 10.sp) },
-                                modifier = Modifier.weight(1f),
-                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = AccentBlue,
-                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                                )
-                            )
-                            OutlinedTextField(
-                                value = terrainText,
-                                onValueChange = { 
-                                    terrainText = it
-                                    onLabelChange(gaitText, it, patientIdText)
-                                },
-                                label = { Text("Terrain", fontSize = 10.sp) },
-                                modifier = Modifier.weight(1f),
-                                textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = AccentPurple,
-                                    unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Recording Controls
-            item {
-                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(
-                        color = if (uiState.isRecording) Color.Red.copy(alpha = 0.1f) else SurfaceNavy,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    if (uiState.isRecording) "Recording Data..." else "Database Logging",
-                                    color = if (uiState.isRecording) Color.Red else TextPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (uiState.isRecording) {
-                                    Text("Saving to Documents folder", color = TextSecondary, fontSize = 10.sp)
-                                }
-                            }
-                            Button(
-                                onClick = { if (uiState.isRecording) onStopRecording() else onStartRecording() },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (uiState.isRecording) Color.Red else AccentBlue
-                                ),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Icon(if (uiState.isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord, null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (uiState.isRecording) "Stop" else "Start Log")
-                            }
-                        }
+                        DropdownSelector(
+                            label = "Gender",
+                            options = listOf("Male", "Female", "Other", "Prefer not to say"),
+                            selectedOption = genderText,
+                            onOptionSelected = {
+                                genderText = it
+                                onMetadataChange(ageText, it, weightText, legText, nameText)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                     
-                    if (uiState.patientId.isNotBlank() && !uiState.isRecording) {
-                        Button(
-                            onClick = onShareClick,
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentPurple),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth().height(56.dp)
-                        ) {
-                            Icon(Icons.Default.Email, null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Email Patient History", fontWeight = FontWeight.Bold)
-                        }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = weightText,
+                            onValueChange = { 
+                                weightText = it
+                                onMetadataChange(ageText, genderText, it, legText, nameText)
+                            },
+                            label = { Text("Weight (kg)", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
+                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentGreen,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            )
+                        )
+                        DropdownSelector(
+                            label = "Injured Leg",
+                            options = listOf("Left", "Right", "Both", "None"),
+                            selectedOption = legText,
+                            onOptionSelected = {
+                                legText = it
+                                onMetadataChange(ageText, genderText, weightText, it, nameText)
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
+        }
 
-            // Real-time Data Card
-            item {
+        // Labeling Section
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("BATCH LABELS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = gaitText,
+                            onValueChange = { 
+                                gaitText = it
+                                onLabelChange(it, terrainText, patientIdText)
+                            },
+                            label = { Text("Gait Type", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
+                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentBlue,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            )
+                        )
+                        OutlinedTextField(
+                            value = terrainText,
+                            onValueChange = { 
+                                terrainText = it
+                                onLabelChange(gaitText, it, patientIdText)
+                            },
+                            label = { Text("Terrain", fontSize = 10.sp) },
+                            modifier = Modifier.weight(1f),
+                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 14.sp),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = AccentPurple,
+                                unfocusedBorderColor = TextSecondary.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        // Recording Controls
+        item {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Surface(
-                    color = SurfaceNavy,
+                    color = if (uiState.isRecording) Color.Red.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
-                        Text("Current Values", color = TextSecondary, fontSize = 12.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
-                        
-                        val data = uiState.directImuData
-                        if (data.isNotEmpty()) {
-                            DataRow("Accel", String.format(java.util.Locale.US, "X: %.4f, Y: %.4f, Z: %.4f", data["ax"], data["ay"], data["az"]))
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
-                            DataRow("Gyro", String.format(java.util.Locale.US, "X: %.2f, Y: %.2f, Z: %.2f", data["gx"], data["gy"], data["gz"]))
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
-                            DataRow("Mag", String.format(java.util.Locale.US, "X: %d, Y: %d, Z: %d", data["mx"]?.toInt() ?: 0, data["my"]?.toInt() ?: 0, data["mz"]?.toInt() ?: 0))
-                        } else {
-                            Text("Waiting for notification data...", color = TextSecondary, fontSize = 14.sp)
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (uiState.isRecording) "Recording Data..." else "Database Logging",
+                                color = if (uiState.isRecording) Color.Red else TextPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (uiState.isRecording) {
+                                Text("Saving to Documents folder", color = TextSecondary, fontSize = 10.sp)
+                            }
+                        }
+                        Button(
+                            onClick = { if (uiState.isRecording) onStopRecording() else onStartRecording() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (uiState.isRecording) Color.Red else AccentBlue
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(if (uiState.isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord, null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (uiState.isRecording) "Stop" else "Start Log")
                         }
                     }
                 }
             }
+        }
 
-            // Charts Section
-            if (uiState.directHistory.isNotEmpty()) {
-                item {
-                    Text("REAL-TIME GRAPHS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
-                }
-                item {
-                    ChartCard("Accelerometer (g)", uiState.directHistory, listOf("ax", "ay", "az"), listOf(AccentGreen, AccentBlue, AccentOrange))
-                }
-                item {
-                    ChartCard("Gyroscope (dps)", uiState.directHistory, listOf("gx", "gy", "gz"), listOf(AccentPurple, Color.Cyan, Color.Magenta))
-                }
-                item {
-                    ChartCard("Magnetometer (raw)", uiState.directHistory, listOf("mx", "my", "mz"), listOf(AccentOrange, Color.Yellow, Color.Red))
-                }
-            }
-
-            item {
-                Button(
-                    onClick = onDisconnectClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.2f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Disconnect Device", color = Color.Red)
-                }
-            }
-        } else {
-            // Scan Section
-            item {
-                Button(
-                    onClick = onScanClick,
-                    enabled = !uiState.isScanning,
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    if (uiState.isScanning) {
-                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("Scanning...")
+        // Real-time Data Card
+        item {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text("Current Values", color = TextSecondary, fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    val data = uiState.directImuData
+                    if (data.isNotEmpty()) {
+                        DataRow("Accel", String.format(java.util.Locale.US, "X: %.4f, Y: %.4f, Z: %.4f", data["ax"], data["ay"], data["az"]))
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
+                        DataRow("Gyro", String.format(java.util.Locale.US, "X: %.2f, Y: %.2f, Z: %.2f", data["gx"], data["gy"], data["gz"]))
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), color = Color.White.copy(alpha = 0.05f))
+                        DataRow("Mag", String.format(java.util.Locale.US, "X: %d, Y: %d, Z: %d", (data["mx"] as? Number)?.toInt() ?: 0, (data["my"] as? Number)?.toInt() ?: 0, (data["mz"] as? Number)?.toInt() ?: 0))
                     } else {
-                        Icon(Icons.Default.Search, contentDescription = null)
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text("Scan for GM1-Node")
+                        Text("Waiting for Pico Relay data...", color = TextSecondary, fontSize = 14.sp)
                     }
                 }
             }
+        }
 
+        // Charts Section
+        if (uiState.directHistory.isNotEmpty()) {
             item {
-                Text("DISCOVERED DEVICES", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                Text("REAL-TIME GRAPHS", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
             }
-            
-            items(uiState.discoveredDevices.size) { index ->
-                val device = uiState.discoveredDevices[index]
-                DeviceItem(device, onConnectClick)
+            item {
+                ChartCard("Accelerometer (g)", uiState.directHistory, listOf("ax", "ay", "az"), listOf(AccentGreen, AccentBlue, AccentOrange))
+            }
+            item {
+                ChartCard("Gyroscope (dps)", uiState.directHistory, listOf("gx", "gy", "gz"), listOf(AccentPurple, Color.Cyan, Color.Magenta))
+            }
+            item {
+                ChartCard("Magnetometer (raw)", uiState.directHistory, listOf("mx", "my", "mz"), listOf(AccentOrange, Color.Yellow, Color.Red))
             }
         }
         item { Spacer(modifier = Modifier.height(20.dp)) }
@@ -1388,67 +1772,48 @@ fun ChartCard(title: String, history: List<Map<String, Float>>, keys: List<Strin
 }
 
 @Composable
-fun MultiAxisChart(
-    history: List<Map<String, Float>>,
-    keys: List<String>,
-    colors: List<Color>,
-    modifier: Modifier = Modifier
-) {
+fun MultiAxisChart(history: List<Map<String, Float>>, keys: List<String>, colors: List<Color>, modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
         if (history.size < 2) return@Canvas
-
+        
         val width = size.width
         val height = size.height
-        val spacing = width / (history.size - 1)
-
-        keys.forEachIndexed { keyIndex, key ->
-            val color = colors[keyIndex]
-            val values = history.map { it[key] ?: 0f }
-            
-            // Find min/max for scaling this specific chart type
-            val minVal = values.minOrNull() ?: 0f
-            val maxVal = values.maxOrNull() ?: 1f
-            val range = (maxVal - minVal).coerceAtLeast(0.1f)
-
-            val path = Path().apply {
-                values.forEachIndexed { index, value ->
-                    val x = index * spacing
-                    // Normalize value to 0..1 range within the chart height
-                    val normalized = (value - minVal) / range
-                    val y = height - (normalized * height)
-                    if (index == 0) moveTo(x, y) else lineTo(x, y)
-                }
+        val spacing = width / 99f // Show last 100 pts
+        
+        keys.forEachIndexed { i, key ->
+            val path = Path()
+            history.forEachIndexed { index, map ->
+                val value = map[key] ?: 0f
+                // Normalize roughly (heuristic)
+                val normValue = (value + 2f) / 4f // map -2..2 to 0..1
+                val x = index * spacing
+                val y = height - (normValue.coerceIn(0f, 1f) * height)
+                
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
-
-            drawPath(
-                path = path,
-                color = color,
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
-            )
+            drawPath(path, colors[i], style = Stroke(width = 2.dp.toPx()))
         }
     }
 }
 
 @Composable
-fun DeviceItem(device: android.bluetooth.BluetoothDevice, onConnect: (android.bluetooth.BluetoothDevice) -> Unit) {
+fun DeviceItem(device: android.bluetooth.BluetoothDevice, onClick: (android.bluetooth.BluetoothDevice) -> Unit) {
     Surface(
+        onClick = { onClick(device) },
         color = SurfaceNavy,
         shape = RoundedCornerShape(12.dp),
-        onClick = { onConnect(device) }
+        modifier = Modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(Icons.Default.Bluetooth, contentDescription = null, tint = AccentBlue)
-            Spacer(modifier = Modifier.width(16.dp))
             Column {
-                // Safety for device name access
-                val name = try { device.name ?: "Unknown Device" } catch (e: SecurityException) { "Restricted" }
+                val name = try { device.name ?: "Unknown Device" } catch (e: SecurityException) { "Unknown Device" }
                 Text(name, color = TextPrimary, fontWeight = FontWeight.Bold)
                 Text(device.address, color = TextSecondary, fontSize = 12.sp)
             }
-            Spacer(modifier = Modifier.weight(1f))
             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
         }
     }
@@ -1463,11 +1828,11 @@ fun DropdownSelector(
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
-
+    
     Box(modifier = modifier) {
         OutlinedTextField(
             value = selectedOption,
-            onValueChange = { },
+            onValueChange = {},
             readOnly = true,
             label = { Text(label, fontSize = 10.sp) },
             modifier = Modifier.fillMaxWidth(),
@@ -1489,7 +1854,7 @@ fun DropdownSelector(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            modifier = Modifier.background(SurfaceNavy)
+            modifier = Modifier.background(MaterialTheme.colorScheme.surface)
         ) {
             options.forEach { option ->
                 DropdownMenuItem(
@@ -1512,10 +1877,353 @@ fun DataRow(label: String, value: String) {
     }
 }
 
+@Composable
+fun VideoTab(label: String, isSelected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        color = if (isSelected) AccentBlue.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, AccentBlue) else null,
+        modifier = modifier
+    ) {
+        Text(
+            text = label,
+            color = if (isSelected) AccentBlue else TextSecondary,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(vertical = 8.dp),
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+fun PrescriptionPopup(
+    uiState: DashboardUiState,
+    onSubmit: (Int, String, Boolean) -> Unit,
+    onDismiss: (Boolean) -> Unit
+) {
+    var step by remember { mutableIntStateOf(1) }
+    var crutchCount by remember { mutableIntStateOf(2) }
+    var selectedGait by remember { mutableStateOf("") }
+    var doNotShowAgain by remember { mutableStateOf(false) }
+    var activeVideoTab by remember { mutableStateOf("walking") }
+
+    val gaitOptions = listOf(
+        "Swing" to "Non-weight bearing",
+        "2-point" to "Both legs partial weight bearing",
+        "3-point" to "Partial weight bearing on one leg",
+        "4-point" to "Balance issues"
+    )
+
+    AlertDialog(
+        onDismissRequest = { onDismiss(false) },
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 8.dp,
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (step == 1) {
+                    Text("How many crutches?", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        CrutchCountCard("1 Crutch", crutchCount == 1, { crutchCount = 1 }, Modifier.weight(1f))
+                        CrutchCountCard("2 Crutches", crutchCount == 2, { crutchCount = 2 }, Modifier.weight(1f))
+                    }
+                    
+                    Spacer(modifier = Modifier.height(32.dp))
+                    
+                    if (crutchCount == 2) {
+                        Text("Which gait were you prescribed?", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        gaitOptions.forEach { (gait, description) ->
+                            Surface(
+                                onClick = { selectedGait = gait },
+                                color = if (selectedGait == gait) AccentBlue.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(12.dp),
+                                border = if (selectedGait == gait) androidx.compose.foundation.BorderStroke(2.dp, AccentBlue) else null,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(description, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text(gait, color = TextSecondary, fontSize = 14.sp, fontStyle = FontStyle.Italic)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Step 2: Tabbed Video Player
+                    Text("Recovery Guide", color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (crutchCount == 1) "1 Crutch Technique" else "$selectedGait Gait",
+                        color = AccentGreen, fontSize = 14.sp
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        VideoTab("WALKING", activeVideoTab == "walking", { activeVideoTab = "walking" }, Modifier.weight(1f))
+                        VideoTab("STAIRS UP", activeVideoTab == "stairs_up", { activeVideoTab = "stairs_up" }, Modifier.weight(1f))
+                        VideoTab("STAIRS DOWN", activeVideoTab == "stairs_down", { activeVideoTab = "stairs_down" }, Modifier.weight(1f))
+                    }
+                    
+                    YouTubeSection(
+                        videoId = when {
+                            crutchCount == 1 -> when(activeVideoTab) {
+                                "stairs_up" -> "G09Zg3Wl2iE"
+                                "stairs_down" -> "XG1z-vA_Y6I"
+                                else -> "I_X1FkYvXyI"
+                            }
+                            selectedGait == "Swing" -> when(activeVideoTab) {
+                                "stairs_up" -> "G09Zg3Wl2iE"
+                                "stairs_down" -> "XG1z-vA_Y6I"
+                                else -> "vD7MvN8N4m4"
+                            }
+                            selectedGait == "3-point" -> when(activeVideoTab) {
+                                "stairs_up" -> "G09Zg3Wl2iE"
+                                "stairs_down" -> "XG1z-vA_Y6I"
+                                else -> "I_X1FkYvXyI"
+                            }
+                            else -> "I_X1FkYvXyI"
+                        },
+                        title = activeVideoTab.replace("_", " ").uppercase()
+                    )
+                    
+                    Spacer(modifier = Modifier.height(24.dp))
+                    
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = doNotShowAgain,
+                            onCheckedChange = { doNotShowAgain = it },
+                            colors = CheckboxDefaults.colors(checkedColor = AccentBlue)
+                        )
+                        Text("Do not show this guide again", color = TextSecondary, fontSize = 14.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { 
+                    if (step == 1) {
+                        if (crutchCount == 1 || selectedGait.isNotBlank()) step = 2
+                    } else {
+                        onSubmit(crutchCount, if (crutchCount == 1) "1-Crutch" else selectedGait, doNotShowAgain)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(if (step == 1) "Next" else "Let's Go!", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            if (step == 2) {
+                TextButton(onClick = { step = 1 }) {
+                    Text("Back", color = TextSecondary)
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun CrutchCountCard(label: String, isSelected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        onClick = onClick,
+        color = if (isSelected) AccentBlue.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(16.dp),
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, AccentBlue) else null,
+        modifier = modifier.height(100.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                if (label.contains("1")) Icons.Default.AccessibilityNew else Icons.AutoMirrored.Filled.DirectionsWalk,
+                contentDescription = null,
+                tint = if (isSelected) AccentBlue else TextSecondary,
+                modifier = Modifier.size(32.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(label, color = if (isSelected) TextPrimary else TextSecondary, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+fun GaitMismatchPopup(uiState: DashboardUiState, onDismiss: () -> Unit) {
+    val gait = uiState.selectedGait
+    val videoId = when {
+        uiState.selectedCrutchCount == 1 -> "I_X1FkYvXyI"
+        gait.contains("Swing", ignoreCase = true) -> "vD7MvN8N4m4"
+        gait.contains("3-point", ignoreCase = true) -> "I_X1FkYvXyI"
+        else -> "I_X1FkYvXyI" // Fallback
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { 
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Warning, contentDescription = null, tint = Color.Red, modifier = Modifier.size(48.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Gait Mismatch!", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+            }
+        },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "You are currently performing a different gait than prescribed. Please refresh the gait you should be doing:",
+                    color = TextSecondary,
+                    textAlign = TextAlign.Center,
+                    fontSize = 14.sp
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "Prescribed: $gait",
+                    color = AccentBlue,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 18.sp
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                YouTubeSection(videoId = videoId, title = "Instructional Video")
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+            ) {
+                Text("GOT IT", fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    )
+}
+
+@Composable
+fun SyncMessagePopup(uiState: DashboardUiState, onDismiss: () -> Unit) {
+    val gait = uiState.selectedGait
+    val videoId = when {
+        uiState.selectedCrutchCount == 1 -> "I_X1FkYvXyI"
+        gait.contains("Swing", ignoreCase = true) -> "vD7MvN8N4m4"
+        gait.contains("3-point", ignoreCase = true) -> "I_X1FkYvXyI"
+        else -> "I_X1FkYvXyI" // Fallback
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { 
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(32.dp))
+                Spacer(modifier = Modifier.width(12.dp))
+                Text("Clinician Message", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            }
+        },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    uiState.syncMessage,
+                    color = TextPrimary,
+                    textAlign = TextAlign.Center,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(24.dp))
+                Text(
+                    "Video Guide for: $gait",
+                    color = AccentGreen,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    modifier = Modifier.align(Alignment.Start)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                YouTubeSection(videoId = videoId, title = "GAIT INSTRUCTION")
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+            ) {
+                Text("DISMISS", fontWeight = FontWeight.Bold)
+            }
+        },
+        containerColor = SurfaceNavy
+    )
+}
+
+@Composable
+fun YouTubeSection(videoId: String, title: String) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(title, color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        Spacer(modifier = Modifier.height(8.dp))
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(200.dp)
+                .clip(RoundedCornerShape(12.dp)),
+            color = Color.Black
+        ) {
+            var isLoading by remember { mutableStateOf(true) }
+            Box(contentAlignment = Alignment.Center) {
+                AndroidView(
+                    factory = { context ->
+                        WebView(context).apply {
+                            webChromeClient = android.webkit.WebChromeClient()
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    isLoading = false
+                                }
+                            }
+                            
+                            // Force Cookie Acceptance
+                            val cookieManager = android.webkit.CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                databaseEnabled = true
+                                mediaPlaybackRequiresUserGesture = false
+                                useWideViewPort = true
+                                loadWithOverviewMode = true
+                                javaScriptCanOpenWindowsAutomatically = true
+                                // Using a Desktop User Agent often bypasses "Video unavailable" in WebViews
+                                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                            }
+                            
+                            // Directly load the embed URL - this is the most reliable way on Android
+                            loadUrl("https://www.youtube.com/embed/${videoId.trim()}?autoplay=1&modestbranding=1&rel=0&hl=en")
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                if (isLoading) {
+                    CircularProgressIndicator(color = AccentBlue, modifier = Modifier.size(30.dp))
+                }
+            }
+        }
+    }
+}
+
 @Preview(showBackground = true)
 @Composable
 fun DashboardPreview() {
     SmartCrutchTheme {
-        MainAppContainer()
+        MainAppContainer(viewModel())
     }
 }

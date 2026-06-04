@@ -4,14 +4,23 @@ plugins {
     alias(libs.plugins.chaquopy)
 }
 
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        pip {
+            install("numpy")
+        }
+    }
+}
+
 android {
     namespace = "com.example.smartcrutch"
-    compileSdk = 36 // Cleaned up the release block for simplicity if needed, but keeping it as was mostly
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.example.smartcrutch"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -19,17 +28,6 @@ android {
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
-        }
-    }
-
-    // Chaquopy configuration
-    chaquopy {
-        defaultConfig {
-            version = "3.12" // Matching user's installed Python version
-            pip {
-                // Add your python packages here
-                install("numpy")
-            }
         }
     }
 
@@ -52,7 +50,7 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            useLegacyPackaging = false
         }
     }
 }

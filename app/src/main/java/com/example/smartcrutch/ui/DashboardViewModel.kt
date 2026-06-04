@@ -13,12 +13,16 @@ import com.example.smartcrutch.data.repository.HarvesterRepository
 import com.example.smartcrutch.data.local.SensorDatabaseHelper
 import com.example.smartcrutch.data.local.PatientMetadataDatabaseHelper
 import android.content.ContentValues
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.delay
@@ -26,6 +30,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
 
 enum class Screen {
     Home, Progress, Sync, Profile, Direct
@@ -39,7 +48,7 @@ data class DashboardUiState(
     val weightLimit: Float = 50f,
     val recoveryGoal: String = "Partial Weight Bearing",
     val organizationName: String = "St. Mary's Orthopedics",
-    val gaitPattern: String = "3-Point",
+    val gaitPattern: String = "Not Detected",
     val humidity: Float = 45.0f,
     val temperature: Float = 22.5f,
     val latestNumbers: List<Int> = emptyList(),
@@ -70,18 +79,39 @@ data class DashboardUiState(
     val patientGender: String = "",
     val patientWeight: String = "",
     val injuredLeg: String = "None",
-    val patientName: String = ""
+    val patientName: String = "Hassan Himaz",
+    val showPrescriptionPopup: Boolean = false,
+    val hidePrescriptionPopupPermanently: Boolean = false,
+    val selectedCrutchCount: Int = 2,
+    val selectedGait: String = "Swing",
+    val isDeveloperModeEnabled: Boolean = false,
+    val lastNgrokData: String = "",
+    val wristStrainIndex: Int = 8,
+    val isDarkMode: Boolean = true,
+    val showGaitMismatchPopup: Boolean = false,
+    val showSplash: Boolean = true,
+    val recoveryScore: Int = 87,
+    val syncMessage: String = "",
+    val showSyncPopup: Boolean = false,
+    val lastShownMessage: String = "",
+    val lastShownDate: String = ""
 )
 
 class DashboardViewModel : ViewModel() {
 
-    private val repository = HarvesterRepository()
+    // private val repository = HarvesterRepository()
     
     private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     private var bluetoothGatt: BluetoothGatt? = null
+    
+    // Pico Relay Peripheral Mode
+    private var bluetoothGattServer: BluetoothGattServer? = null
+    private var advertiser: BluetoothLeAdvertiser? = null
+    private val reassemblyBuffer = mutableMapOf<Int, ByteArray>() // msgId -> accumulated bytes
+    
     private val handler = Handler(Looper.getMainLooper())
     
     private var dbHelper: SensorDatabaseHelper? = null
@@ -89,8 +119,199 @@ class DashboardViewModel : ViewModel() {
     private var logWriter: PrintWriter? = null
 
     init {
+        checkPrescriptionPopup()
         startLiveFeed()
+        startAutoUpdate()
     }
+
+    private fun checkPrescriptionPopup() {
+        // Simple session-based check
+        if (!hasBeenDismissedThisSession) {
+            _uiState.value = _uiState.value.copy(showPrescriptionPopup = true)
+        }
+    }
+
+    fun dismissPrescriptionPopup(permanently: Boolean) {
+        hasBeenDismissedThisSession = true
+        _uiState.value = _uiState.value.copy(
+            showPrescriptionPopup = false,
+            hidePrescriptionPopupPermanently = permanently
+        )
+    }
+
+    companion object {
+        private var hasBeenDismissedThisSession = false
+    }
+
+    fun submitPrescription(crutches: Int, gait: String) {
+        _uiState.value = _uiState.value.copy(
+            selectedCrutchCount = crutches,
+            selectedGait = gait,
+            gaitPattern = "Not Detected" // Start with awaiting data
+        )
+        addLog("Profile updated via prescription: Crutches=$crutches, Gait=$gait")
+    }
+
+    // --- Pico Relay (Peripheral Mode) ---
+
+    fun startPicoRelayMode(context: Context) {
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            _uiState.value = _uiState.value.copy(bleStatus = "Bluetooth Disabled")
+            return
+        }
+
+        if (!bluetoothAdapter.isMultipleAdvertisementSupported) {
+            _uiState.value = _uiState.value.copy(bleStatus = "Hardware Unsupported")
+            addLog("Error: Device does not support BLE Advertising (Peripheral Mode)")
+            return
+        }
+
+        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        
+        // 1. Setup GATT Server
+        try {
+            bluetoothGattServer = bluetoothManager.openGattServer(context, gattServerCallback)
+            val service = BluetoothGattService(
+                UUID.fromString("8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a01"),
+                BluetoothGattService.SERVICE_TYPE_PRIMARY
+            )
+
+            // DataIn: Nano writes TO this
+            val dataInChar = BluetoothGattCharacteristic(
+                UUID.fromString("8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a02"),
+                BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
+                BluetoothGattCharacteristic.PERMISSION_WRITE
+            )
+            
+            // Status: Optional
+            val statusChar = BluetoothGattCharacteristic(
+                UUID.fromString("8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a03"),
+                BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                BluetoothGattCharacteristic.PERMISSION_READ
+            )
+
+            service.addCharacteristic(dataInChar)
+            service.addCharacteristic(statusChar)
+            bluetoothGattServer?.addService(service)
+
+            // 2. Start Advertising
+            advertiser = bluetoothAdapter.bluetoothLeAdvertiser
+            val settings = AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setConnectable(true)
+                .setTimeout(0)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .build()
+
+            val data = AdvertiseData.Builder()
+                .setIncludeDeviceName(false) // UUID + Name often exceeds 31 bytes
+                .addServiceUuid(android.os.ParcelUuid(UUID.fromString("8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a01")))
+                .build()
+
+            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            _uiState.value = _uiState.value.copy(bleStatus = "Pico Relay: Advertising...")
+            addLog("Pico Relay Mode Started (Peripheral)")
+        } catch (e: SecurityException) {
+            _uiState.value = _uiState.value.copy(bleStatus = "Permission Denied")
+        }
+    }
+
+    fun stopPicoRelayMode() {
+        try {
+            advertiser?.stopAdvertising(advertiseCallback)
+            bluetoothGattServer?.close()
+            bluetoothGattServer = null
+            _uiState.value = _uiState.value.copy(isBleConnected = false, bleStatus = "Idle")
+            addLog("Pico Relay Mode Stopped")
+        } catch (e: SecurityException) { /* ignore */ }
+    }
+
+    private val advertiseCallback = object : AdvertiseCallback() {
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            super.onStartSuccess(settingsInEffect)
+            addLog("BLE Advertising Started Successfully")
+        }
+
+        override fun onStartFailure(errorCode: Int) {
+            val errorString = when (errorCode) {
+                ADVERTISE_FAILED_DATA_TOO_LARGE -> "Data Too Large (31B limit)"
+                ADVERTISE_FAILED_TOO_MANY_ADVERTISERS -> "Too Many Advertisers"
+                ADVERTISE_FAILED_ALREADY_STARTED -> "Already Advertising"
+                ADVERTISE_FAILED_INTERNAL_ERROR -> "Internal Hardware Error"
+                ADVERTISE_FAILED_FEATURE_UNSUPPORTED -> "BLE Advertising Unsupported"
+                else -> "Error Code: $errorCode"
+            }
+            val msg = "Adv Failed: $errorString"
+            handler.post { 
+                _uiState.value = _uiState.value.copy(bleStatus = msg)
+                addLog(msg)
+                // Clean up GATT server if advertising fails
+                stopPicoRelayMode()
+            }
+        }
+    }
+
+    private val gattServerCallback = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            handler.post {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    _uiState.value = _uiState.value.copy(isBleConnected = true, bleStatus = "Nano Connected")
+                    addLog("Nano Connected: ${device.address}")
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    _uiState.value = _uiState.value.copy(isBleConnected = false, bleStatus = "Nano Disconnected")
+                    addLog("Nano Disconnected")
+                }
+            }
+        }
+
+        override fun onCharacteristicWriteRequest(
+            device: BluetoothDevice,
+            requestId: Int,
+            characteristic: BluetoothGattCharacteristic,
+            preparedWrite: Boolean,
+            responseNeeded: Boolean,
+            offset: Int,
+            value: ByteArray
+        ) {
+            if (characteristic.uuid == UUID.fromString("8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a02")) {
+                handlePicoRelayFrame(value)
+                if (responseNeeded) {
+                    try {
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+                    } catch (e: SecurityException) { /* ignore */ }
+                }
+            }
+        }
+    }
+
+    private fun handlePicoRelayFrame(frame: ByteArray) {
+        if (frame.size < 4) return
+        
+        val flags = frame[0].toInt() and 0xFF
+        val msgId = frame[1].toInt() and 0xFF
+        val seq = (frame[2].toInt() and 0xFF) or ((frame[3].toInt() and 0xFF) shl 8)
+        val payload = frame.sliceArray(4 until frame.size)
+
+        val isStart = (flags and 0x80) != 0
+        val isEnd = (flags and 0x40) != 0
+
+        var buffer = reassemblyBuffer[msgId] ?: ByteArray(0)
+        
+        if (isStart) {
+            buffer = payload
+        } else {
+            buffer += payload
+        }
+
+        if (isEnd) {
+            reassemblyBuffer.remove(msgId)
+            handleDirectData(buffer)
+        } else {
+            reassemblyBuffer[msgId] = buffer
+        }
+    }
+
+    // --- Legacy Central Mode (Keeping for compatibility/sync) ---
 
     fun startBleScan() {
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
@@ -235,103 +456,200 @@ class DashboardViewModel : ViewModel() {
     }
 
     private fun handleDirectData(data: ByteArray) {
-        val currentState = _uiState.value
-        
-        // 1. Try Experimental Binary Detection (32 bytes, 0xAABB header)
-        if (data.size == 32 || currentState.isExperimentalDecodingEnabled) {
-            val experimental = decodeExperimentalBinary(data)
-            if (experimental != null) {
-                val imuMap = experimental.filterValues { it is Float || it is Double }.mapValues { 
-                    (it.value as? Float) ?: (it.value as Double).toFloat() 
-                }
-                updateDirectState(imuMap)
-                return
-            }
-        }
-
-        // 2. Fallback to CSV String
-        val csv = String(data)
-        parseDirectCsv(csv)
+        processUniversalBinary(data, "DIRECT")
     }
 
-    fun updateDirectState(imuMap: Map<String, Float>) {
+    private fun processUniversalBinary(data: ByteArray, source: String) {
         val currentState = _uiState.value
-        val newHistory = (currentState.directHistory + imuMap).takeLast(100)
         
-        _uiState.value = currentState.copy(
-            directImuData = imuMap,
-            directHistory = newHistory,
-            lastReceivedType = "DIRECT"
-        )
-        
-        // Save to SQLite if recording
-        if (currentState.isRecording && currentSessionId != -1L) {
-            dbHelper?.let { db ->
-                val now = Date()
-                val timeVal = now.time.toDouble() / 1000.0 // Seconds precision
+        when {
+            // 1. Pico Relay / SensorPacket (46 bytes)
+            // Format: 6 floats (ax,ay,az,gx,gy,gz) + 3 int16 (mx,my,mz) + 4 floats (roll,pitch,yaw,force_kg)
+            data.size == 46 -> {
+                val pico = decodeSensorPacket(data)
                 
-                val values = ContentValues().apply {
-                    put(SensorDatabaseHelper.COLUMN_READ_SESS_ID, currentSessionId)
-                    put(SensorDatabaseHelper.COLUMN_TIMESTAMP, timeVal)
-                    put(SensorDatabaseHelper.COLUMN_AX, imuMap["ax"])
-                    put(SensorDatabaseHelper.COLUMN_AY, imuMap["ay"])
-                    put(SensorDatabaseHelper.COLUMN_AZ, imuMap["az"])
-                    put(SensorDatabaseHelper.COLUMN_GX, imuMap["gx"])
-                    put(SensorDatabaseHelper.COLUMN_GY, imuMap["gy"])
-                    put(SensorDatabaseHelper.COLUMN_GZ, imuMap["gz"])
-                    put(SensorDatabaseHelper.COLUMN_MX, imuMap["mx"])
-                    put(SensorDatabaseHelper.COLUMN_MY, imuMap["my"])
-                    put(SensorDatabaseHelper.COLUMN_MZ, imuMap["mz"])
-                }
-                db.insertReading(values)
-            }
-        }
-    }
+                // Extract values safely
+                val ax = pico["ax"] as? Float ?: 0f
+                val ay = pico["ay"] as? Float ?: 0f
+                val az = pico["az"] as? Float ?: 0f
+                val gx = pico["gx"] as? Float ?: 0f
+                val gy = pico["gy"] as? Float ?: 0f
+                val gz = pico["gz"] as? Float ?: 0f
+                val mx = pico["mx"] as? Int ?: 0
+                val my = pico["my"] as? Int ?: 0
+                val mz = pico["mz"] as? Int ?: 0
+                val roll = pico["roll"] as? Float ?: 0f
+                val pitch = pico["pitch"] as? Float ?: 0f
+                val yaw = pico["yaw"] as? Float ?: 0f
+                val forceKg = pico["force_kg"] as? Float ?: 0f
 
-    private fun decodeExperimentalBinary(data: ByteArray): Map<String, Any>? {
-        if (data.size != 32) return null
-        return try {
-            val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            val header = buffer.short.toInt() and 0xFFFF
-            
-            // Allow override if toggle is ON, but check header by default
-            if (header != 0xAABB && !_uiState.value.isExperimentalDecodingEnabled) return null
+                // Update weight bearing based on force_kg (assuming limit is currentState.weightLimit)
+                val weightLimit = currentState.weightLimit.takeIf { it > 0 } ?: 50f
+                val wbPercentage = (forceKg / weightLimit).coerceIn(0f, 1f)
+                val newWeightHistory = (currentState.weightHistory + wbPercentage).takeLast(30)
 
-            mapOf(
-                "ax" to buffer.float,
-                "ay" to buffer.float,
-                "az" to buffer.float,
-                "gx" to buffer.float,
-                "gy" to buffer.float,
-                "gz" to buffer.float,
-                "mx" to buffer.short.toFloat(),
-                "my" to buffer.short.toFloat(),
-                "mz" to buffer.short.toFloat()
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun parseDirectCsv(csv: String) {
-        try {
-            val parts = csv.split(",")
-            if (parts.size >= 9) {
-                val imuMap = mapOf(
-                    "ax" to parts[0].trim().toFloat(),
-                    "ay" to parts[1].trim().toFloat(),
-                    "az" to parts[2].trim().toFloat(),
-                    "gx" to parts[3].trim().toFloat(),
-                    "gy" to parts[4].trim().toFloat(),
-                    "gz" to parts[5].trim().toFloat(),
-                    "mx" to parts[6].trim().toFloat(),
-                    "my" to parts[7].trim().toFloat(),
-                    "mz" to parts[8].trim().toFloat()
+                // Map for UI display
+                val uiMap = mapOf(
+                    "ax_g" to ax, "ay_g" to ay, "az_g" to az,
+                    "gx_dps" to gx, "gy_dps" to gy, "gz_dps" to gz,
+                    "mx_raw" to mx, "my_raw" to my, "mz_raw" to mz,
+                    "roll" to roll, "pitch" to pitch, "yaw" to yaw,
+                    "force_kg" to forceKg,
+                    "seq" to 0
                 )
-                updateDirectState(imuMap)
+
+                _uiState.value = currentState.copy(
+                    weightBearing = wbPercentage,
+                    weightHistory = newWeightHistory,
+                    latestGm1Data = uiMap,
+                    lastReceivedType = "GM1",
+                    directImuData = pico.filterValues { it is Float }.mapValues { it.value as Float }
+                )
+                
+                addLog("[$source] Recv 46B: Force=%.2fkg, Roll=%.1f".format(forceKg, roll))
+
+                // Save to SQLite if recording
+                if (currentState.isRecording && currentSessionId != -1L) {
+                    val dbPico = pico.filterValues { it is Float }.mapValues { it.value as Float }.toMutableMap()
+                    dbPico["mx"] = mx.toFloat()
+                    dbPico["my"] = my.toFloat()
+                    dbPico["mz"] = mz.toFloat()
+                    saveReadingToDb(dbPico)
+                }
             }
-        } catch (e: Exception) {
-            // Parsing error
+
+            // Legacy support or fallback for 30 bytes
+            data.size == 30 -> {
+                val pico = decodeSensorPacket(data)
+                val ax = pico["ax"] as? Float ?: 0f
+                val ay = pico["ay"] as? Float ?: 0f
+                val az = pico["az"] as? Float ?: 0f
+                
+                val uiMap = pico.toMutableMap()
+                uiMap["ax_g"] = ax
+                uiMap["ay_g"] = ay
+                uiMap["az_g"] = az
+                uiMap["seq"] = 0
+
+                val pseudoWeight = Math.abs(az).coerceIn(0f, 1f)
+                val newWeightHistory = (currentState.weightHistory + pseudoWeight).takeLast(30)
+
+                _uiState.value = currentState.copy(
+                    latestGm1Data = uiMap,
+                    lastReceivedType = "GM1",
+                    weightBearing = pseudoWeight,
+                    weightHistory = newWeightHistory
+                )
+                addLog("[$source] Recv 30B (Legacy)")
+            }
+
+            // 2. EnviroMonitor / L2S2 Binary Tag (22 bytes)
+            // Format: starts with 0x01 0x84 (Timestamp tag)
+            data.size == 22 && data[0] == 0x01.toByte() && data[1] == 0x84.toByte() -> {
+                val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                // Skip timestamp tag (2) + timestamp (8) + temp tag (2)
+                val temp = buffer.getFloat(12)
+                // Skip humidity tag (2)
+                val hum = buffer.getFloat(18)
+                
+                _uiState.value = currentState.copy(
+                    temperature = temp,
+                    humidity = hum,
+                    lastReceivedType = "SENSOR"
+                )
+                addLog(String.format(Locale.US, "[%s] Sensor: %.1f°C, %.1f%% Humidity", source, temp, hum))
+            }
+
+            // 3. Experimental (32 bytes) - Format: <Hffffffhhh
+            data.size == 32 && currentState.isExperimentalDecodingEnabled -> {
+                val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                val seq = buffer.short.toInt() and 0xFFFF
+                val pico = mapOf(
+                    "ax" to buffer.float,
+                    "ay" to buffer.float,
+                    "az" to buffer.float,
+                    "gx" to buffer.float,
+                    "gy" to buffer.float,
+                    "gz" to buffer.float,
+                    "mx" to buffer.short.toFloat(),
+                    "my" to buffer.short.toFloat(),
+                    "mz" to buffer.short.toFloat()
+                )
+                
+                val uiMap = mapOf(
+                    "ax_g" to (pico["ax"] ?: 0f),
+                    "ay_g" to (pico["ay"] ?: 0f),
+                    "az_g" to (pico["az"] ?: 0f),
+                    "gx_dps" to (pico["gx"] ?: 0f),
+                    "gy_dps" to (pico["gy"] ?: 0f),
+                    "gz_dps" to (pico["gz"] ?: 0f),
+                    "mx_raw" to (pico["mx"]?.toInt() ?: 0),
+                    "my_raw" to (pico["my"]?.toInt() ?: 0),
+                    "mz_raw" to (pico["mz"]?.toInt() ?: 0),
+                    "seq" to seq
+                )
+
+                _uiState.value = currentState.copy(
+                    latestGm1Data = uiMap,
+                    lastReceivedType = "GM1",
+                    directImuData = pico,
+                    directHistory = (currentState.directHistory + pico).takeLast(100)
+                )
+                
+                addLog(String.format(Locale.US, "[%s] Exp #%d: A(%.2f,%.2f,%.2f)", source, seq, pico["ax"], pico["ay"], pico["az"]))
+            }
+
+            // 3. Raw Debug Mode
+            currentState.isRawStreamEnabled -> {
+                val bytes = data.map { it.toInt() and 0xFF }
+                _uiState.value = currentState.copy(latestNumbers = bytes, lastReceivedType = "RAW")
+                addLog("[$source] Raw: ${bytes.take(8).joinToString(", ")}... (${data.size}B)")
+            }
+
+            else -> {
+                addLog("[$source] Unknown Format: ${data.size}B")
+            }
+        }
+    }
+
+    private fun decodeSensorPacket(data: ByteArray): Map<String, Any> {
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        return mapOf(
+            "ax" to buffer.float,
+            "ay" to buffer.float,
+            "az" to buffer.float,
+            "gx" to buffer.float,
+            "gy" to buffer.float,
+            "gz" to buffer.float,
+            "mx" to buffer.short.toInt(),
+            "my" to buffer.short.toInt(),
+            "mz" to buffer.short.toInt(),
+            "roll" to buffer.float,
+            "pitch" to buffer.float,
+            "yaw" to buffer.float,
+            "force_kg" to buffer.float
+        )
+    }
+
+    private fun saveReadingToDb(imuMap: Map<String, Float>) {
+        dbHelper?.let { db ->
+            val now = Date()
+            val timeVal = now.time.toDouble() / 1000.0
+            
+            val values = ContentValues().apply {
+                put(SensorDatabaseHelper.COLUMN_READ_SESS_ID, currentSessionId)
+                put(SensorDatabaseHelper.COLUMN_TIMESTAMP, timeVal)
+                put(SensorDatabaseHelper.COLUMN_AX, imuMap["ax"])
+                put(SensorDatabaseHelper.COLUMN_AY, imuMap["ay"])
+                put(SensorDatabaseHelper.COLUMN_AZ, imuMap["az"])
+                put(SensorDatabaseHelper.COLUMN_GX, imuMap["gx"])
+                put(SensorDatabaseHelper.COLUMN_GY, imuMap["gy"])
+                put(SensorDatabaseHelper.COLUMN_GZ, imuMap["gz"])
+                put(SensorDatabaseHelper.COLUMN_MX, imuMap["mx"])
+                put(SensorDatabaseHelper.COLUMN_MY, imuMap["my"])
+                put(SensorDatabaseHelper.COLUMN_MZ, imuMap["mz"])
+            }
+            db.insertReading(values)
         }
     }
 
@@ -424,6 +742,7 @@ class DashboardViewModel : ViewModel() {
 
         if (filesToShare.isEmpty()) {
             addLog("Error: No databases found for sharing")
+            android.widget.Toast.makeText(context, "No database found for Patient ${state.patientId}", android.widget.Toast.LENGTH_LONG).show()
             return
         }
 
@@ -448,6 +767,23 @@ class DashboardViewModel : ViewModel() {
         context.startActivity(chooser)
     }
 
+    fun clearAllLocalData(context: android.content.Context) {
+        val documentsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: return
+        val files = documentsDir.listFiles() ?: return
+        
+        var deletedCount = 0
+        files.forEach { file ->
+            if (file.name.endsWith(".db") || file.name.endsWith(".db-shm") || file.name.endsWith(".db-wal")) {
+                if (file.delete()) {
+                    deletedCount++
+                }
+            }
+        }
+        
+        addLog("Cleared $deletedCount local database files.")
+        android.widget.Toast.makeText(context, "Deleted $deletedCount database files.", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     fun navigateTo(screen: Screen) {
         _uiState.value = _uiState.value.copy(currentScreen = screen)
     }
@@ -463,167 +799,25 @@ class DashboardViewModel : ViewModel() {
     }
 
     fun syncData() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isSyncing = true, syncStatus = "Syncing...")
-            val loginSuccess = HarvesterClient.login()
-            if (loginSuccess) {
-                delay(1000)
-                val now = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-                _uiState.value = _uiState.value.copy(isSyncing = false, lastSyncTime = now, syncStatus = "Connected")
-                addLog("Manual sync successful at $now")
-            } else {
-                _uiState.value = _uiState.value.copy(isSyncing = false, syncStatus = "Auth Failed")
-            }
-        }
+        fetchFromNgrok()
     }
 
     private fun startLiveFeed() {
-        viewModelScope.launch {
-            val loginSuccess = HarvesterClient.login()
-            if (!loginSuccess) {
-                delay(10000)
-                startLiveFeed()
-                return@launch
-            }
-            
-            _uiState.value = _uiState.value.copy(isLiveFeedActive = true, syncStatus = "Connected")
-
-            repository.getLiveFeed("4779fbb9b035ce55").collect { dataList ->
-                if (dataList.isNotEmpty()) {
-                    processIncomingData(dataList)
-                }
-            }
-        }
+        // Disabled: No background connection or token requests
+        _uiState.value = _uiState.value.copy(syncStatus = "Local Mode")
     }
 
+    /*
     private fun processIncomingData(dataList: List<InstrumentData>) {
         dataList.sortedBy { it.deviceDataId }.forEach { data ->
             val rawData = try {
                 android.util.Base64.decode(data.dataValue, android.util.Base64.DEFAULT)
             } catch (e: Exception) { return@forEach }
 
-            val currentState = _uiState.value
-
-            // 1. Identify Format (Hard-Coded Protocol Logic)
-            // We prioritize the 22-byte I9h structure (Seq + 9 axes) 
-            // over whatever the server labels the instrument as.
-            val isGm1Protocol = rawData.size == 22 && rawData[rawData.size - 2] != '\n'.code.toByte()
-            
-            val isSensorProtocol = rawData.size >= 22 && rawData[rawData.size - 11] == 'a'.code.toByte()
-            
-            val isExperimentalProtocol = rawData.size == 32 && 
-                (java.nio.ByteBuffer.wrap(rawData).order(java.nio.ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF == 0xAABB)
-
-            when {
-                currentState.isRawStreamEnabled -> {
-                    val bytes = rawData.map { it.toInt() and 0xFF }
-                    _uiState.value = _uiState.value.copy(latestNumbers = bytes, lastReceivedType = "RAW")
-                    addLog("Raw [${data.instrumentType ?: "Unknown"}]: ${bytes.take(8).joinToString(", ")}...")
-                }
-
-                isExperimentalProtocol || (currentState.isExperimentalDecodingEnabled && rawData.size == 32) -> {
-                    val exp = decodeExperimentalBinary(rawData)
-                    if (exp != null) {
-                        val numbers = listOf(
-                            0, // Seq dummy
-                            (exp["ax"] as Float * 1000).toInt(),
-                            (exp["ay"] as Float * 1000).toInt(),
-                            (exp["az"] as Float * 1000).toInt(),
-                            (exp["gx"] as Float * 100).toInt(),
-                            (exp["gy"] as Float * 100).toInt(),
-                            (exp["gz"] as Float * 100).toInt(),
-                            (exp["mx"] as Float).toInt(),
-                            (exp["my"] as Float).toInt(),
-                            (exp["mz"] as Float).toInt()
-                        )
-                        _uiState.value = _uiState.value.copy(
-                            latestGm1Data = exp,
-                            latestNumbers = numbers,
-                            lastReceivedType = "GM1"
-                        )
-                        addLog("Experimental Protocol Detected (32B)")
-                    }
-                }
-
-                isGm1Protocol -> {
-                    val gm1 = decodeGm1Binary(rawData)
-                    // Hard-code the 10 values into our numeric stream
-                    val numbers = listOf(
-                        (gm1["seq"] as? Number ?: 0).toInt(),
-                        ((gm1["ax_g"] as? Double ?: 0.0) * 1000).toInt(), // scaled for integer list
-                        ((gm1["ay_g"] as? Double ?: 0.0) * 1000).toInt(),
-                        ((gm1["az_g"] as? Double ?: 0.0) * 1000).toInt(),
-                        ((gm1["gx_dps"] as? Double ?: 0.0) * 100).toInt(),
-                        ((gm1["gy_dps"] as? Double ?: 0.0) * 100).toInt(),
-                        ((gm1["gz_dps"] as? Double ?: 0.0) * 100).toInt(),
-                        (gm1["mx_raw"] as? Int ?: 0),
-                        (gm1["my_raw"] as? Int ?: 0),
-                        (gm1["mz_raw"] as? Int ?: 0)
-                    )
-                    _uiState.value = _uiState.value.copy(
-                        latestGm1Data = gm1, 
-                        latestNumbers = numbers,
-                        lastReceivedType = "GM1"
-                    )
-                    addLog(String.format(java.util.Locale.US, "GM1 Protocol Verified (Seq: %d)", gm1["seq"]))
-                }
-
-                isSensorProtocol -> {
-                    val humidity = extractFloat(rawData, rawData.size - 10)
-                    val temperature = extractFloat(rawData, rawData.size - 4)
-                    if (humidity != null && temperature != null) {
-                        _uiState.value = _uiState.value.copy(
-                            humidity = humidity,
-                            temperature = temperature,
-                            latestNumbers = rawData.map { it.toInt() and 0xFF },
-                            lastReceivedType = "SENSOR"
-                        )
-                        addLog(String.format(java.util.Locale.US, "Sensor Auto-Parsed: %.1f°C", temperature))
-                    }
-                }
-
-                else -> {
-                    addLog("Unknown Data: ${data.instrumentType ?: "Null"} (${rawData.size}B)")
-                }
-            }
+            processUniversalBinary(rawData, "API")
         }
     }
-
-    private fun decodeGm1Binary(data: ByteArray): Map<String, Any> {
-        val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        val seq = buffer.int
-        val ax = buffer.short
-        val ay = buffer.short
-        val az = buffer.short
-        val gx = buffer.short
-        val gy = buffer.short
-        val gz = buffer.short
-        val mx = buffer.short
-        val my = buffer.short
-        val mz = buffer.short
-        
-        return mapOf(
-            "seq" to seq,
-            "ax_g" to ax / 1000.0,
-            "ay_g" to ay / 1000.0,
-            "az_g" to az / 1000.0,
-            "gx_dps" to gx / 100.0,
-            "gy_dps" to gy / 100.0,
-            "gz_dps" to gz / 100.0,
-            "mx_raw" to mx.toInt(),
-            "my_raw" to my.toInt(),
-            "mz_raw" to mz.toInt()
-        )
-    }
-
-    private fun extractFloat(bytes: ByteArray, offset: Int): Float? {
-        if (offset + 4 > bytes.size) return null
-        return try {
-            java.nio.ByteBuffer.wrap(bytes, offset, 4)
-                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .float
-        } catch (e: Exception) { null }
-    }
+    */
 
     private fun addLog(message: String) {
         val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
@@ -631,8 +825,147 @@ class DashboardViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(liveLogs = newLogs)
     }
 
+    fun toggleDeveloperMode(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isDeveloperModeEnabled = enabled)
+        addLog("Developer Mode ${if (enabled) "ENABLED" else "DISABLED"}")
+    }
+
+    fun fetchFromNgrok() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(isSyncing = true, syncStatus = "Syncing...")
+                }
+                addLog("Fetching patient data from ngrok...")
+                val urlString = "https://lucrative-alienate-settling.ngrok-free.dev/patient_app_data.json"
+                val url = URL(urlString)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                
+                val responseText = connection.inputStream.bufferedReader().use { it.readText() }
+                val root = JSONObject(responseText)
+                
+                // Parse nested metrics
+                val metrics = root.optJSONObject("metrics") ?: JSONObject()
+                val stepCount = metrics.optInt("stepCount", 0)
+                val stepTarget = metrics.optInt("dailyStepTarget", 4000)
+                val weightBearing = metrics.optDouble("weightBearingPctBW", 0.0).toFloat() / 100f
+                val weightLimit = metrics.optDouble("prescribedWeightBearingPctBW", 50.0).toFloat()
+                val detectedGait = metrics.optString("detectedGait", "Not Detected")
+                val prescribedGait = metrics.optString("prescribedGait", "Swing")
+                val cusi = metrics.optInt("cusi", 0)
+                val message = root.optString("message", "")
+                
+                withContext(Dispatchers.Main) {
+                    val currentState = _uiState.value
+                    val now = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+                    val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+                    
+                    // Only show popup if it's a NEW message AND we haven't shown a popup today yet
+                    // Or just if it's a new message? User said "just once is enough per day"
+                    val isNewMessage = message.isNotEmpty() && 
+                                     message != currentState.lastShownMessage && 
+                                     today != currentState.lastShownDate
+                    
+                    _uiState.value = currentState.copy(
+                        lastNgrokData = "Sync Successful: ${root.optString("timestamp")}",
+                        isSyncing = false,
+                        lastSyncTime = now,
+                        syncStatus = "Connected",
+                        steps = stepCount,
+                        goalSteps = stepTarget,
+                        weightBearing = weightBearing,
+                        weightLimit = weightLimit,
+                        gaitPattern = detectedGait,
+                        selectedGait = prescribedGait,
+                        wristStrainIndex = cusi, // Updated to follow 'cusi' key
+                        recoveryScore = 65,
+                        syncMessage = message,
+                        showSyncPopup = isNewMessage,
+                        lastShownMessage = message,
+                        lastShownDate = if (isNewMessage) today else currentState.lastShownDate
+                    )
+                    if (isNewMessage) {
+                        addLog("New Clinician Message received for today.")
+                    } else {
+                        addLog("Dashboard updated (Background sync).")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    val errorMsg = e.message ?: "Unknown error"
+                    addLog("Fetch failed: $errorMsg")
+                    _uiState.value = _uiState.value.copy(
+                        isSyncing = false,
+                        syncStatus = "Error",
+                        lastNgrokData = "Error: $errorMsg"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun startAutoUpdate() {
+        viewModelScope.launch {
+            while (true) {
+                delay(30000) // 30 seconds
+                if (!_uiState.value.isSyncing) {
+                    addLog("Automatic 30s update triggered")
+                    syncData()
+                }
+            }
+        }
+    }
+
+    fun updateGoalSteps(steps: Int) {
+        _uiState.value = _uiState.value.copy(goalSteps = steps)
+        addLog("Daily Step Goal updated to $steps")
+    }
+
+    fun updateWeightLimit(limit: Float) {
+        _uiState.value = _uiState.value.copy(weightLimit = limit)
+        addLog("Weight Limit updated to $limit kg")
+    }
+
+    fun updatePrescribedGait(gait: String) {
+        _uiState.value = _uiState.value.copy(selectedGait = gait)
+        addLog("Prescribed Gait updated to $gait")
+    }
+
+    fun updateDetectedGait(gait: String) {
+        val currentState = _uiState.value
+        val isMismatch = gait != "Not Detected" && 
+                        currentState.selectedGait.isNotBlank() && 
+                        !currentState.selectedGait.equals(gait, ignoreCase = true)
+        
+        _uiState.value = currentState.copy(
+            gaitPattern = gait,
+            showGaitMismatchPopup = isMismatch
+        )
+        addLog("Detected Gait updated to $gait ${if (isMismatch) "(MISMATCH)" else ""}")
+    }
+
+    fun dismissGaitMismatchPopup() {
+        _uiState.value = _uiState.value.copy(showGaitMismatchPopup = false)
+    }
+
+    fun dismissSplash() {
+        _uiState.value = _uiState.value.copy(showSplash = false)
+    }
+
+    fun dismissSyncPopup() {
+        _uiState.value = _uiState.value.copy(showSyncPopup = false)
+    }
+
+    fun toggleDarkMode(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(isDarkMode = enabled)
+    }
+
     override fun onCleared() {
         super.onCleared()
         disconnectBle()
+        stopPicoRelayMode()
     }
 }
