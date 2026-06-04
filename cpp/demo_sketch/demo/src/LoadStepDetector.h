@@ -42,7 +42,6 @@ struct LoadStepSampleResult {
 
 class LoadStepDetector {
  public:
-  static constexpr float kMagOffsetSubtractUt = -16.0f;
   static constexpr float kMagLpfAlpha = 0.25f;
   static constexpr uint32_t kStartupZeroMs = 1000;
   static constexpr size_t kBaselineWindowSamples = 50;

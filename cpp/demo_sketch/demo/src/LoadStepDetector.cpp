@@ -44,7 +44,7 @@ LoadStepSampleResult LoadStepDetector::process(uint32_t seq, uint32_t t_ms, floa
     first_sample_ms_ = t_ms;
   }
 
-  const float detector_signal_uT = fabsf(mz_uT) - kMagOffsetSubtractUt;
+  const float detector_signal_uT = fabsf(mz_uT);
   if (!lpf_initialized_) {
     detector_signal_lpf_uT_ = detector_signal_uT;
     lpf_initialized_ = true;
