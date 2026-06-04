@@ -1,87 +1,91 @@
 # C++ / Arduino Firmware
 
-This folder contains the Arduino firmware for **Seeed XIAO nRF52840 Sense**
-that streams:
+This folder contains the Arduino firmware for the **Seeed XIAO nRF52840 Sense**.
+The current demo sketch streams crutch sensor data from:
 
-- internal LSM6DS3 IMU accel + gyro
-- external BMM150 magnetometer
+- internal LSM6DS3 IMU acceleration + gyro
+- external 7Semi ICM-20948 magnetometer over I2C
+- Madgwick roll, pitch, and yaw estimates
+- load-step force estimate from the magnetometer Z axis
 - serial CSV output
-- BLE notify output (22-byte binary payload; not CSV)
+- BLE writes to a PicoRelay-compatible phone/app service
 
-## Current sketch
+## Current Sketch
 
-- `GM1Firmware/GM1Firmware.ino` - main firmware (IMU + mag + BLE)
-- `GM1Firmware/src/MagBMM150.*` - BMM150 driver
+- `demo_sketch/demo/demo.ino` - main demo firmware
+- `demo_sketch/demo/src/LoadStepDetector.*` - magnetometer-to-force load detector
+- `demo_sketch/demo/src/MagBMM150.*` - legacy BMM150 driver kept with the sketch, but not used by `demo.ino`
+- `first_cpp_port/first_cpp_port.ino` - earlier port/reference sketch
 
-## Required Arduino core and libraries
+## Required Arduino Core And Libraries
 
-### Board core (required)
+### Board Core
 
-- `Seeed nRF52 mbed-enabled Boards`  
-  FQBN used by this project:
+- `Seeed nRF52 mbed-enabled Boards`
+- FQBN used by this project:
   - `Seeeduino:mbed:xiaonRF52840Sense`
 
-Before installing the core, add this URL in **Settings → Additional boards manager URLs**:
+Before installing the core, add this URL in **Settings -> Additional boards manager URLs**:
 
 `https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json`
 
-### Libraries (required)
+### Libraries
 
 - `ArduinoBLE` (Library Manager)
 - `Seeed_Arduino_LSM6DS3` (ZIP in this folder, or Library Manager)
+- `Madgwick` / `MadgwickAHRS` (Library Manager)
+- `7Semi_ICM20948` library for the external magnetometer
 
-## Arduino IDE setup
+## Arduino IDE Setup
 
-1. Install board core:
-   - **Settings → Additional boards manager URLs** → add the Seeed URL above
-   - **Tools → Board → Boards Manager** → search `Seeed nRF52 mbed-enabled` → install
+1. Install the board core:
+   - **Settings -> Additional boards manager URLs** -> add the Seeed URL above
+   - **Tools -> Board -> Boards Manager** -> search `Seeed nRF52 mbed-enabled` -> install
 2. Install libraries:
-   - **Tools → Manage Libraries** → search `ArduinoBLE` → install
-   - **Sketch → Include Library → Add .ZIP Library…** → select `cpp/Seeed_Arduino_LSM6DS3-master.zip`
+   - **Tools -> Manage Libraries** -> search `ArduinoBLE` -> install
+   - **Tools -> Manage Libraries** -> search `Madgwick` -> install
+   - Install the `7Semi_ICM20948` library used by the demo sketch
+   - **Sketch -> Include Library -> Add .ZIP Library...** -> select `cpp/Seeed_Arduino_LSM6DS3-master.zip`
 3. Select board:
-   - **Tools → Board → XIAO nRF52840 Sense (mbed-enabled)**
-4. Open:
-   - `cpp/GM1Firmware/GM1Firmware.ino`
-5. Upload.
-
-## Run in Arduino IDE (GUI)
-
-1. Connect XIAO nRF52840 Sense over USB.
-2. Open Arduino IDE.
-3. Add the Seeed boards manager URL (see above) if not already added.
-4. Go to **Boards Manager** and install:
-   - `Seeed nRF52 mbed-enabled Boards`
-5. Go to **Library Manager** and install:
-   - `ArduinoBLE`
-6. Go to **Sketch → Include Library → Add .ZIP Library…** and select:
-   - `cpp/Seeed_Arduino_LSM6DS3-master.zip`
-7. Select board:
-   - **Tools → Board → XIAO nRF52840 Sense (mbed-enabled)**
-8. Select the correct USB port:
-   - macOS: **Tools → Port →** `/dev/cu.usbmodem...`
+   - **Tools -> Board -> XIAO nRF52840 Sense (mbed-enabled)**
+4. Select the correct USB port:
+   - macOS: **Tools -> Port ->** `/dev/cu.usbmodem...`
    - Windows: `COMx` (name may include "Seeed Studio XIAO nRF52840 Sense")
-   - Linux: `/dev/ttyACM0` (or similar)
-9. Open:
-   - `cpp/GM1Firmware/GM1Firmware.ino`
-10. Click **Upload**.
-11. Open **Serial Monitor** at **115200** baud to view CSV output.
+   - Linux: `/dev/ttyACM0` or similar
+5. Open:
+   - `cpp/demo_sketch/demo/demo.ino`
+6. Click **Upload**.
+7. Open **Serial Monitor** at **115200** baud to view CSV output.
 
-## Serial output format
+## Serial Output Format
 
 Header:
 
-`seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_raw,my_raw,mz_raw`
+`seq,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,mx_uT,my_uT,mz_uT,roll,pitch,yaw,force_kg`
 
-Each row starts with a monotonic `seq` counter for packet-loss detection.
+Each row starts with a monotonic `seq` counter for packet-loss detection. The demo samples at about 30 Hz (`kRecordPeriodMs = 33`).
 
-Serial commands (type one letter + Enter): `s` start, `p` pause, `m` toggle motion sleep/wake.
+Serial commands, typed as one letter plus Enter:
 
-## BLE test (nRF Connect)
+- `s` - start recording from paused state
+- `p` - pause recording
+- `m` - toggle motion sleep/wake mode
 
-1. Scan for device name: `GM1-Node`
-2. Connect
-3. Service UUID:
-   - `12345678-1234-5678-1234-56789abcdef0`
-4. Characteristic UUID:
-   - `12345678-1234-5678-1234-56789abcdef1`
-5. Enable notifications to view streamed binary payload (22 bytes: `uint32` seq + 9 × `int16`).
+## BLE PicoRelay Mode
+
+The demo acts as a BLE central. It scans for a PicoRelay peripheral and writes framed binary sensor packets to its writable characteristic.
+
+PicoRelay UUIDs:
+
+- Service: `8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a01`
+- DataIn characteristic: `8a3e4d2f-1b6c-4f9e-a7d8-3e5b2c1f4a02`
+
+The payload is a packed 46-byte `SensorPacket`:
+
+- `float ax, ay, az`
+- `float gx, gy, gz`
+- `int16_t mx, my, mz`
+- `float roll, pitch, yaw`
+- `float force_kg`
+
+Large payloads are split into PicoRelay frames with a 4-byte frame header and up to 16 payload bytes per frame.
