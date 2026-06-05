@@ -31,69 +31,70 @@ let gaitModel = null;
 
 // ── Random Forest model ────────────────────────────────────────
 let _rfTrees    = null;   // array of tree objects
-let _rfNorm     = null;   // {feature: {mean, std}}
+let _rfNorm     = null;   // kept for legacy compatibility (not used by new model)
 
-// Feature order must match training script extract_rf_features()
-// [stance_duration, force_mean/std/max/min, pitch_..., yaw_...,
-//  roll_..., az_..., mz_..., accel_mag_...]
-const RF_ALIASES = ['force','pitch','yaw','roll','az','mz','accel_mag'];
+// Feature order matches final_gait_rf training (33 features):
+// stride_duration, then per-channel stats for:
+// mz_uT, pitch_deg, roll_deg, ax_g, ay_g, az_g, gx_dps, gy_dps, gz_dps
+// Note: not all channels have all 4 stats — order must match exactly.
 
 async function loadRFModel() {
   try {
-    const [mRes, nRes] = await Promise.all([
-      fetch('./rf_model.json'),
-      fetch('./model_norm_stats.json'),
-    ]);
-    if (!mRes.ok || !nRes.ok) return;
-    _rfTrees = (await mRes.json()).trees;
-    _rfNorm  = await nRes.json();
+    const mRes = await fetch('./rf_model.json');
+    if (!mRes.ok) return;
+    const data = await mRes.json();
+    _rfTrees = data.trees;
     const statusEl = document.getElementById('modelStatus');
     if (statusEl) { statusEl.textContent = 'RF: ready ✓'; statusEl.classList.add('loaded'); }
-  } catch { /* files not present — stay on rule-based */ }
+  } catch { /* file not present — stay on rule-based */ }
 }
 
 function _rfPredict(features) {
   // features: {channels, duration, packets}
-  // channels order matches CH_NAMES in script:
-  // ax(0) ay(1) az(2) gx(3) gy(4) gz(5) pitch(6) yaw(7) roll(8) accel_mag(9) gyro_mag(10) mz(11)
-  const pk = features.packets || [];   // raw packets for force + mz
-  const ch = features.channels;        // normalised 12-ch × 100-pt arrays
+  // CH_NAMES: ax(0) ay(1) az(2) gx(3) gy(4) gz(5) pitch(6) yaw(7) roll(8) accel_mag(9) gyro_mag(10) mz(11)
+  const ch = features.channels;
 
-  // Map channel alias → raw time-series (100 pts, interpolated)
-  const raw = {
-    force:     pk.length ? features.packets.map(p =>
-                 Math.max(0, p.load_kg != null && isFinite(p.load_kg)
-                   ? p.load_kg * 9.81
-                   : (Math.abs(p.az) - 0.98) * 9.81)) : Array.from(ch[2]),
-    pitch:     Array.from(ch[6]),
-    yaw:       Array.from(ch[7]),
-    roll:      Array.from(ch[8]),
-    az:        Array.from(ch[2]),
-    mz:        Array.from(ch[11]),
-    accel_mag: Array.from(ch[9]),
-  };
+  // Extract raw arrays per channel (100-pt interpolated, no normalisation)
+  const mz    = Array.from(ch[11]);
+  const pitch = Array.from(ch[6]);
+  const roll  = Array.from(ch[8]);
+  const ax    = Array.from(ch[0]);
+  const ay    = Array.from(ch[1]);
+  const az    = Array.from(ch[2]);
+  const gx    = Array.from(ch[3]);
+  const gy    = Array.from(ch[4]);
+  const gz    = Array.from(ch[5]);
 
-  // Normalise each channel using training stats
-  const norm = {};
-  for (const alias of RF_ALIASES) {
-    const { mean, std } = (_rfNorm[alias] || { mean: 0, std: 1 });
-    norm[alias] = raw[alias].map(v => (v - mean) / (std + 1e-6));
-  }
+  function s_mean(a) { return a.reduce((s,v)=>s+v,0)/a.length; }
+  function s_std(a)  { const m=s_mean(a); return Math.sqrt(a.reduce((s,v)=>s+(v-m)**2,0)/a.length); }
+  function s_max(a)  { return Math.max(...a); }
+  function s_min(a)  { return Math.min(...a); }
 
-  // Build feature vector: [stance_duration, alias_mean/std/max/min ...]
-  const vec = [features.duration];
-  for (const alias of RF_ALIASES) {
-    const a = norm[alias];
-    const n = a.length || 1;
-    const mu  = a.reduce((s,v) => s+v, 0) / n;
-    const sq  = a.reduce((s,v) => s+(v-mu)**2, 0) / n;
-    vec.push(mu);                          // mean
-    vec.push(Math.sqrt(sq));               // std
-    vec.push(Math.max(...a));              // max
-    vec.push(Math.min(...a));              // min
-  }
+  // Build feature vector in exact training order (33 features):
+  // stride_duration,
+  // mz_uT:    mean, max, min, std
+  // pitch_deg: mean, max, min          (no std)
+  // roll_deg:  mean, max, min, std
+  // ax_g:      mean, max, min          (no std)
+  // ay_g:      mean, max, min, std
+  // az_g:      mean, min               (no max, no std)
+  // gx_dps:    mean, max, min, std
+  // gy_dps:    mean, max, min, std
+  // gz_dps:    mean, max, min, std
+  const vec = [
+    features.duration,
+    s_mean(mz),  s_max(mz),  s_min(mz),  s_std(mz),
+    s_mean(pitch), s_max(pitch), s_min(pitch),
+    s_mean(roll),  s_max(roll),  s_min(roll),  s_std(roll),
+    s_mean(ax),  s_max(ax),  s_min(ax),
+    s_mean(ay),  s_max(ay),  s_min(ay),  s_std(ay),
+    s_mean(az),  s_min(az),
+    s_mean(gx),  s_max(gx),  s_min(gx),  s_std(gx),
+    s_mean(gy),  s_max(gy),  s_min(gy),  s_std(gy),
+    s_mean(gz),  s_max(gz),  s_min(gz),  s_std(gz),
+  ];  // 33 values total
 
-  // Walk each tree and vote
+  // Walk each tree and majority vote
   function walkTree(node) {
     if ('leaf' in node) return node.leaf;
     return vec[node.f] <= node.t ? walkTree(node.l) : walkTree(node.r);
