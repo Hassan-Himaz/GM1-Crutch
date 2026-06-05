@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stepwise Clinical Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- TensorFlow.js for CNN gait classification -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── TOPBAR ── -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="plus">+</div>
+      <div>
+        <h1>STEPWISE</h1>
+        <p>Clinical Dashboard</p>
+      </div>
+    </div>
+    <div class="summary" id="summaryPills"></div>
+  </header>
+
+  <!-- ── TAB NAV ── -->
+  <nav class="tabnav">
+    <button class="tab active" onclick="showTab('dashboard')">Dashboard</button>
+    <button class="tab"        onclick="showTab('analytics')">Analytics</button>
+    <button class="tab"        onclick="showTab('register')">Register Patient</button>
+    <button class="tab"        onclick="showTab('patientapp')">Patient App</button>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════
+       TAB 1 — DASHBOARD
+  ════════════════════════════════════════════ -->
+  <section id="dashboardTab" class="tab-section active-section">
+    <div class="filters">
+      <input id="searchInput" type="text" placeholder="Search patients…" oninput="renderDashboard()" />
+      <button class="filter active" onclick="setFilter('all',    this)">All</button>
+      <button class="filter"        onclick="setFilter('ontrack',this)">On Track</button>
+      <button class="filter"        onclick="setFilter('review', this)">Review</button>
+      <button class="filter"        onclick="setFilter('flagged',this)">Flagged</button>
+      <span class="date" id="todayDate"></span>
+    </div>
+
+    <main class="table">
+      <div class="table-header">
+        <span>Patient</span>
+        <span>Status</span>
+        <span>Weight Bearing</span>
+        <span>Gait</span>
+        <span>Steps</span>
+        <span>CUSI</span>
+        <span>Adherence</span>
+        <span>Clinician Action</span>
+        <span>Crutch</span>
+      </div>
+      <div id="patientRows"></div>
+    </main>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       TAB 2 — ANALYTICS
+  ════════════════════════════════════════════ -->
+  <section id="analyticsTab" class="tab-section">
+    <div class="analytics-controls">
+      <div class="controls-row">
+        <label>Patient</label>
+        <select id="analyticsPatientSelect" onchange="onAnalyticsPatientChange()"></select>
+      </div>
+      <div class="controls-row">
+        <label>Instrument&nbsp;ID</label>
+        <input id="instrumentIdInput" type="text" placeholder="4779fbb9b035ce55" />
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary large" id="analyseBtn" onclick="analysePatient()">▶ Analyse Patient</button>
+        <button class="btn-secondary" id="stopBtn" onclick="stopLivePolling()" style="display:none">■ Stop</button>
+        <button class="btn-secondary"     onclick="loadDemoData()">Load demo data</button>
+        <label  class="btn-secondary file-btn">
+          Load JSON file
+          <input type="file" accept=".json" onchange="loadJsonFile(event)" style="display:none" />
+        </label>
+        <label class="btn-secondary file-btn" title="Load converted TF.js model (model.json + weights)">
+          Load CNN model
+          <input type="file" accept=".json" onchange="loadCNNModel(event)" style="display:none" />
+        </label>
+        <span id="modelStatus" class="model-status">CNN: rule-based fallback</span>
+      </div>
+      <div id="analyticsStatus" class="status-msg"></div>
+    </div>
+
+    <!-- metrics strip + charts – hidden until analysis runs -->
+    <div id="analyticsContent" class="analytics-content hidden">
+
+      <div id="fallAlert" style="display:none;background:#dc2626;color:#fff;border-radius:8px;padding:14px 20px;margin-bottom:16px;font-weight:600;font-size:1.05rem;"></div>
+
+      <div class="metrics-strip">
+        <div class="metric-card">
+          <div class="metric-val" id="metricSteps">—</div>
+          <div class="metric-lbl">Steps / Target</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="metricWB">—</div>
+          <div class="metric-lbl">Weight Bearing % BW</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="metricGait">—</div>
+          <div class="metric-lbl">Gait Match</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="metricCUSI">—</div>
+          <div class="metric-lbl">CUSI (Wrist Strain)</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val" id="metricAdherence">—</div>
+          <div class="metric-lbl">Overall Adherence</div>
+        </div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="chart-box">
+          <div class="chart-title">Acceleration Magnitude (g)</div>
+          <canvas id="accelChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Gyroscope Magnitude — Wrist Rotation (°/s)</div>
+          <canvas id="gyroChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Crutch Axial Force / Weight Bearing Estimate</div>
+          <canvas id="forceChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Step Detection (peaks marked in amber)</div>
+          <canvas id="stepChart" width="600" height="200"></canvas>
+        </div>
+      </div>
+
+      <div class="charts-row-half">
+        <div class="chart-box half">
+          <div class="chart-title">Gait Pattern Distribution</div>
+          <canvas id="gaitChart" width="300" height="280"></canvas>
+        </div>
+        <div class="chart-box half">
+          <div class="chart-title">Raw Packet Sample (first 3)</div>
+          <pre id="rawPreview" class="raw-pre"></pre>
+        </div>
+      </div>
+
+      <!-- Gait signature waveforms — mean ± std per gait class (notebook style) -->
+      <div class="charts-grid" style="margin-top:20px">
+        <div class="chart-box">
+          <div class="chart-title">Mean Acceleration Profile per Gait Class (± 1 SD)</div>
+          <canvas id="sigAccelChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Mean Gyro Profile per Gait Class (± 1 SD)</div>
+          <canvas id="sigGyroChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Mean Pitch Profile per Gait Class (± 1 SD)</div>
+          <canvas id="sigPitchChart" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-box">
+          <div class="chart-title">Stance Phase Detection &amp; Step Count</div>
+          <canvas id="stanceChart" width="600" height="200"></canvas>
+        </div>
+      </div>
+
+      <!-- Multi-day trends (populated from per-day history dict) -->
+      <div id="historySection" class="hidden" style="margin-top:20px">
+        <div class="chart-box">
+          <div class="chart-title">Multi-Day History — Steps, CUSI &amp; Weight Bearing</div>
+          <canvas id="historyChart" width="900" height="220"></canvas>
+        </div>
+      </div>
+
+    </div><!-- /analyticsContent -->
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       TAB 3 — REGISTER PATIENT
+  ════════════════════════════════════════════ -->
+  <section id="registerTab" class="tab-section">
+    <div class="form-container">
+      <h2>Register New Patient / Edit Prescription</h2>
+      <p class="form-hint">Complete this form when issuing crutches at the first appointment.</p>
+
+      <form id="registerForm" onsubmit="savePatient(event)">
+        <input type="hidden" id="reg_editId" value="" />
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Full Name *</label>
+            <input id="reg_name" type="text" required placeholder="e.g. Sarah Mitchell" />
+          </div>
+          <div class="form-group">
+            <label>Initials *</label>
+            <input id="reg_initials" type="text" maxlength="3" required placeholder="SM" />
+          </div>
+          <div class="form-group">
+            <label>Age</label>
+            <input id="reg_age" type="number" min="1" max="120" placeholder="65" />
+          </div>
+          <div class="form-group">
+            <label>Biological Sex</label>
+            <select id="reg_gender">
+              <option value="Other">Prefer not to say</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Body Weight (kg) *</label>
+            <input id="reg_weight" type="number" min="20" max="300" required placeholder="70" />
+          </div>
+          <div class="form-group full">
+            <label>Injury / Condition *</label>
+            <input id="reg_detail" type="text" required placeholder="e.g. Day 1 · Knee replacement" />
+          </div>
+
+          <div class="form-group">
+            <label>Prescribed Gait</label>
+            <select id="reg_gait">
+              <option value="3-Point">3-Point (swing-through)</option>
+              <option value="4-Point">4-Point (alternating)</option>
+              <option value="2-Point">2-Point (fast alternating)</option>
+              <option value="Swing-Through">Swing-Through</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Weight Bearing Level</label>
+            <select id="reg_wbLevel" onchange="updateWBDisplay()">
+              <option value="0">Non-Weight Bearing (NWB) — 0 %</option>
+              <option value="12">Toe-Touch (TTWB) — ~10–15 %</option>
+              <option value="20">TTWB+ — 20 % BW (NICE)</option>
+              <option value="40" selected>Partial (PWB) — ~30–50 %</option>
+              <option value="75">Weight Bear as Tolerated (WBAT)</option>
+              <option value="100">Full Weight Bearing (FWB) — 100 %</option>
+              <option value="custom">Custom %</option>
+            </select>
+          </div>
+          <div class="form-group" id="customWBGroup" style="display:none">
+            <label>Custom Weight Bearing %</label>
+            <input id="reg_wbCustom" type="number" min="0" max="100" placeholder="30" />
+          </div>
+
+          <div class="form-group">
+            <label>Daily Step Target: <span id="reg_stepsVal">5000</span></label>
+            <input id="reg_steps" type="range" min="500" max="15000" step="500" value="5000"
+                   oninput="document.getElementById('reg_stepsVal').textContent=this.value" />
+          </div>
+
+          <div class="form-group">
+            <label>CUSI Alert Threshold (1–20): <span id="reg_cusiVal">12</span></label>
+            <input id="reg_cusi" type="range" min="1" max="20" step="1" value="12"
+                   oninput="document.getElementById('reg_cusiVal').textContent=this.value" />
+          </div>
+
+          <div class="form-group">
+            <label>Rehab Duration (days)</label>
+            <input id="reg_duration" type="number" min="1" max="365" placeholder="25" />
+          </div>
+
+          <div class="form-group">
+            <label>Crutch Instrument ID</label>
+            <input id="reg_instrumentId" type="text" placeholder="4779fbb9b035ce55" />
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit"   class="btn-primary">Save Patient</button>
+          <button type="button"   class="btn-secondary" onclick="clearRegisterForm()">Clear</button>
+        </div>
+        <div id="registerStatus" class="status-msg" style="margin-top:12px"></div>
+      </form>
+
+      <!-- Existing patients list -->
+      <div id="editPatientSection">
+        <h3 style="margin-top:40px">Existing Patients</h3>
+        <div id="editPatientRows"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════
+       TAB 4 — PATIENT APP
+  ════════════════════════════════════════════ -->
+  <section id="patientappTab" class="tab-section">
+    <div class="patientapp-container">
+      <h2>Patient App Data</h2>
+      <p>This JSON packet is sent to the patient's Android app via your ngrok tunnel after each analysis.</p>
+
+      <div class="controls-row">
+        <label>Patient</label>
+        <select id="appPatientSelect" onchange="buildPatientAppData()"></select>
+        <button class="btn-primary"   onclick="buildPatientAppData()">Refresh</button>
+        <button class="btn-secondary" onclick="downloadPatientAppJson()">Download JSON</button>
+      </div>
+
+      <div class="controls-row ngrok-row">
+        <label>ngrok URL</label>
+        <input id="ngrokUrl" type="text" placeholder="https://xxxx.ngrok-free.app/patient-data" style="flex:1" />
+        <button class="btn-secondary" onclick="pushToNgrok()">Push to ngrok</button>
+      </div>
+      <div id="ngrokStatus" class="status-msg" style="margin-top:8px"></div>
+
+      <pre id="patientAppOutput" class="raw-pre large"></pre>
+    </div>
+  </section>
+
+</div><!-- /app -->
+<script src="script.js"></script>
+</body>
+</html>
