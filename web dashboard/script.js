@@ -453,41 +453,149 @@ function rollingMean(arr, w) {
   });
 }
 
-// ── Stance detection ──────────────────────────────────────────
-// Notebook: threshold = 5% BW on force.
-// IMU proxy: smoothed acc_mag > 1.12 g indicates crutch loaded.
+// ── Stance detection (used for chart visualisation only) ──────
+// Simple threshold fallback for display purposes.
 function detectStance(packets) {
-  const mags    = packets.map(p => Math.sqrt(p.ax ** 2 + p.ay ** 2 + p.az ** 2));
-  const smooth  = rollingMean(mags, 5);
-  const threshold = 1.12;
-  return smooth.map(v => v > threshold);
+  const mags   = packets.map(p => Math.sqrt(p.ax ** 2 + p.ay ** 2 + p.az ** 2));
+  const smooth = rollingMean(mags, 5);
+  return smooth.map(v => v > 1.12);
 }
 
-// ── Step counting ─────────────────────────────────────────────
-// Each stance-phase rising edge = one step
-function countSteps(packets) {
-  const stance = detectStance(packets);
-  let steps = 0;
-  for (let i = 1; i < stance.length; i++) if (stance[i] && !stance[i - 1]) steps++;
-  return steps;
-}
+// ── Peak-release pipeline ─────────────────────────────────────
+// Ported from more_stride_analysis.ipynb run_peak_release_pipeline_magnet_only()
+// Uses mz (magnetometer Z) as the detector signal with an adaptive z-score
+// baseline rather than a fixed threshold.
+//
+// Parameters match the notebook (Cell 2/3):
+//   STARTUP_ZERO_S=1.0, BASELINE_WINDOW=50, Z_ENTER=2.0,
+//   RELEASE_FRACTION=0.2, REFRACTORY_MS=50, MAG_LPF_ALPHA=0.25,
+//   STD_FLOOR=1.0, MIN_DURATION_S=0.50, SUSTAINED_CUTOFF_S=5.0
+//
+// Returns: { steps, strides [{packets, duration}], stanceFlags }
+function peakReleasePipeline(packets) {
+  const SAMPLE_RATE        = 30;
+  const STARTUP_ZERO_S     = 1.0;
+  const BASELINE_WINDOW    = 50;
+  const Z_ENTER            = 2.0;
+  const RELEASE_FRACTION   = 0.2;
+  const REFRACTORY_MS      = 50.0;
+  const SUSTAINED_CUTOFF_S = 5.0;
+  const MAG_LPF_ALPHA      = 0.25;
+  const STD_FLOOR          = 1.0;
+  const MIN_DURATION_S     = 0.50;
 
-// ── Stride segmentation ───────────────────────────────────────
-// Extract stance-phase windows (5–150 samples = 0.17–5 s at 30 Hz)
-function segmentStrides(packets) {
-  const stance = detectStance(packets);
-  const strides = [];
-  let inStance = false, start = 0;
-  for (let i = 0; i < stance.length; i++) {
-    if (stance[i] && !inStance)  { start = i; inStance = true; }
-    if (!stance[i] && inStance) {
-      const len = i - start;
-      if (len >= 5 && len <= 150)
-        strides.push({ packets: packets.slice(start, i), duration: len / 30 });
-      inStance = false;
+  if (packets.length < 5) return { steps: 0, strides: [], stanceFlags: [] };
+
+  // Time array (seconds from first packet)
+  const times = packets.map((_, i) => i / SAMPLE_RATE);
+
+  // EWM low-pass filter on mz (alpha=0.25, matches notebook ewm)
+  const mzRaw = packets.map(p => (p.mz != null ? p.mz : 0));
+  const mzLpf = new Array(mzRaw.length);
+  mzLpf[0] = mzRaw[0];
+  for (let i = 1; i < mzRaw.length; i++)
+    mzLpf[i] = MAG_LPF_ALPHA * mzRaw[i] + (1 - MAG_LPF_ALPHA) * mzLpf[i - 1];
+
+  // Helper: mean + std of an array
+  function arrStats(arr) {
+    const n = arr.length || 1;
+    const mu = arr.reduce((s, v) => s + v, 0) / n;
+    const variance = arr.reduce((s, v) => s + (v - mu) ** 2, 0) / Math.max(n - 1, 1);
+    return { mean: mu, std: Math.max(Math.sqrt(variance), STD_FLOOR) };
+  }
+
+  // Startup window → initial baseline + std floor
+  const startupN = Math.min(Math.round(STARTUP_ZERO_S * SAMPLE_RATE), mzLpf.length - 1);
+  const startupArr = mzLpf.slice(0, startupN);
+  const startupStdFloor = Math.max(arrStats(startupArr).std, STD_FLOOR);
+
+  // Rolling baseline window (last BASELINE_WINDOW samples of startup)
+  const window = startupArr.slice(-BASELINE_WINDOW);
+  let { mean: baselineMean, std: baselineStd } = arrStats(window);
+
+  let state = 'idle';
+  let loadStartIdx = -1;
+  let releaseCandidateIdx = -1;
+  let lastReleaseTime = -1e9;
+  let postReleaseSamples = 0;
+  let baselineAtEntry = baselineMean;
+  let peakSignal = 0;
+  let releaseLevel = 0;
+
+  const events = [];
+  const stanceFlags = new Array(packets.length).fill(false);
+
+  for (let i = startupN; i < packets.length; i++) {
+    const t  = times[i];
+    const b  = mzLpf[i];
+    const z  = (b - baselineMean) / Math.max(baselineStd, startupStdFloor);
+
+    if (state === 'idle') {
+      const canStart = (t - lastReleaseTime) * 1000 >= REFRACTORY_MS;
+      if (canStart && z >= Z_ENTER) {
+        state           = 'loaded';
+        loadStartIdx    = i;
+        releaseCandidateIdx = -1;
+        baselineAtEntry = baselineMean;
+        peakSignal      = b;
+        releaseLevel    = baselineAtEntry + RELEASE_FRACTION * (peakSignal - baselineAtEntry);
+        postReleaseSamples = 0;
+      } else if (postReleaseSamples > 0) {
+        if (window.length >= BASELINE_WINDOW) window.shift();
+        window.push(b);
+        const s = arrStats(window);
+        baselineMean = s.mean;
+        baselineStd  = Math.max(s.std, startupStdFloor);
+        postReleaseSamples--;
+      }
+
+    } else if (state === 'loaded') {
+      stanceFlags[i] = true;
+      if (b > peakSignal) {
+        peakSignal   = b;
+        releaseLevel = baselineAtEntry + RELEASE_FRACTION * (peakSignal - baselineAtEntry);
+      }
+      if (b <= releaseLevel) {
+        state = 'releasing';
+        releaseCandidateIdx = i;
+      }
+      // Sustained — crutch held down too long, not a step
+      if (t - times[loadStartIdx] > SUSTAINED_CUTOFF_S) {
+        events.push({ startIdx: loadStartIdx, releaseIdx: i, duration: t - times[loadStartIdx], kind: 'sustained', accepted: false });
+        state = 'idle';
+        lastReleaseTime = t;
+        postReleaseSamples = BASELINE_WINDOW;
+      }
+
+    } else if (state === 'releasing') {
+      stanceFlags[i] = true;
+      if (b > peakSignal) {
+        // Signal rose again — still loaded
+        peakSignal   = b;
+        releaseLevel = baselineAtEntry + RELEASE_FRACTION * (peakSignal - baselineAtEntry);
+        state = 'loaded';
+      } else {
+        // Confirm release after REFRACTORY_MS
+        const confirmSamples = Math.round((REFRACTORY_MS / 1000) * SAMPLE_RATE);
+        if (i - releaseCandidateIdx >= confirmSamples) {
+          const duration = times[releaseCandidateIdx] - times[loadStartIdx];
+          const accepted = duration >= MIN_DURATION_S && duration < SUSTAINED_CUTOFF_S;
+          events.push({ startIdx: loadStartIdx, releaseIdx: releaseCandidateIdx, duration, kind: 'step', accepted });
+          state = 'idle';
+          lastReleaseTime = times[releaseCandidateIdx];
+          postReleaseSamples = BASELINE_WINDOW;
+        }
+      }
     }
   }
-  return strides;
+
+  const accepted = events.filter(e => e.accepted && e.kind === 'step');
+  const strides  = accepted.map(e => ({
+    packets:  packets.slice(e.startIdx, e.releaseIdx + 1),
+    duration: e.duration,
+  }));
+
+  return { steps: accepted.length, strides, stanceFlags };
 }
 
 // ── Feature extraction for CNN ────────────────────────────────
@@ -725,14 +833,12 @@ async function analysePackets(packets, patient) {
   const clean = packets.filter(p => isFinite(p.ax) && isFinite(p.ay) && isFinite(p.az));
   if (!clean.length) return nullAnalysis();
 
-  setStatus(`Processing ${clean.length} packets — segmenting strides…`);
-  const strides = segmentStrides(clean);
+  setStatus(`Processing ${clean.length} packets — running peak-release stride detection…`);
+  const { steps: stepCount, strides, stanceFlags } = peakReleasePipeline(clean);
+  const stepAdherence = Math.min(100, Math.round((stepCount / patient.dailyStepTarget) * 100));
 
   setStatus(`${strides.length} strides found — running RF gait classification…`);
   const gaitResult = await classifyAllStrides(strides);
-
-  const stepCount    = countSteps(clean);
-  const stepAdherence = Math.min(100, Math.round((stepCount / patient.dailyStepTarget) * 100));
 
   const { avgWBPct, wbAdherence } = calcWeightBearing(strides, gaitResult.labels, patient);
 
