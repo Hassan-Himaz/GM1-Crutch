@@ -489,8 +489,9 @@ function peakReleasePipeline(packets) {
   // Time array (seconds from first packet)
   const times = packets.map((_, i) => i / SAMPLE_RATE);
 
-  // EWM low-pass filter on mz (alpha=0.25, matches notebook ewm)
-  const mzRaw = packets.map(p => (p.mz != null ? p.mz : 0));
+  // EWM low-pass filter on abs(mz) — absolute value matches Sean's firmware
+  // which uses abs(mz_uT) so the detector works regardless of crutch orientation.
+  const mzRaw = packets.map(p => Math.abs(p.mz != null ? p.mz : 0));
   const mzLpf = new Array(mzRaw.length);
   mzLpf[0] = mzRaw[0];
   for (let i = 1; i < mzRaw.length; i++)
