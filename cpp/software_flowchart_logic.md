@@ -7,8 +7,8 @@ flowchart TD
     C --> D[Estimate orientation and crutch force]
     D --> E[Pack data and stream live sample over BLE]
     E --> F[Backend receives and parses data]
-    F --> G[Detect load events and reject small spikes]
-    G --> H[Output valid steps and metrics]
+    F --> G[Detect load events, falls, and reject small spikes]
+    G --> H[Output valid steps, fall flags, and metrics]
 
     C --> I{Motion sleep enabled?}
     I -- No --> C
