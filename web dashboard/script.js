@@ -796,18 +796,27 @@ function calcCUSI(strides, strideLabels, patient) {
     const prev = cumH; cumH += sess.h;
     cusi += c_i * (calcHM(cumH) - calcHM(prev));
   }
-  // Scale raw CUSI to 1–20 clinical display range
-  // RSI: <1 = low, 1-3 = moderate, >3 = high risk
-  return Math.max(1, Math.min(20, Math.round(1 + (cusi / 0.4) * 19)));
+  // Return raw integrated RSI value — caller scales for display
+  return cusi;
+}
+
+// Scale raw CUSI to 1–20 clinical display range
+// RSI: <1 = low, 1-3 = moderate, >3 = high risk
+function scaleCUSI(raw) {
+  return Math.max(1, Math.min(20, Math.round(1 + (raw / 0.4) * 19)));
 }
 
 // ── Overall adherence ─────────────────────────────────────────
-function calcAdherence(stepAdherence, wbAdherence, gaitMatchPct, cusiOk) {
+// Weights: WB 30%, Steps 30%, Gait match 25%, Wrist strain 15%
+// Wrist component uses Sina's formula: (1 - RSI/10) × 100
+// giving a continuous penalty rather than a binary pass/fail.
+function calcAdherence(stepAdherence, wbAdherence, gaitMatchPct, rawCusi) {
+  const Ws = Math.max(0, Math.min(100, (1 - rawCusi / 10) * 100));
   return Math.round(
     0.30 * stepAdherence +
     0.30 * wbAdherence   +
     0.25 * gaitMatchPct  +
-    0.15 * (cusiOk ? 100 : 45)
+    0.15 * Ws
   );
 }
 
@@ -848,9 +857,10 @@ async function analysePackets(packets, patient) {
   const prescCount = prescIdx >= 0 ? gaitResult.counts[prescIdx + 1] : 0;
   const gaitMatchPct = strides.length ? Math.round((prescCount / strides.length) * 100) : 0;
 
-  const cusi    = calcCUSI(strides, gaitResult.labels, patient);
+  const rawCusi = calcCUSI(strides, gaitResult.labels, patient);
+  const cusi    = scaleCUSI(rawCusi);
   const cusiOk  = cusi < patient.cusiThreshold;
-  const overall = calcAdherence(stepAdherence, wbAdherence, gaitMatchPct, cusiOk);
+  const overall = calcAdherence(stepAdherence, wbAdherence, gaitMatchPct, rawCusi);
   const fallResult = detectFalls(clean, patient);
 
   let status, statusText, action;
